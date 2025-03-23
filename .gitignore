@@ -1,0 +1,40 @@
+ECHO is on.
+__pycache__/
+*.py[cod]
+*$py.class
+ECHO is on.
+dist/
+build/
+*.egg-info/
+ECHO is on.
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+ECHO is on.
+.ipynb_checkpoints
+ECHO is on.
+.venv/
+venv/
+ENV/
+ECHO is on.
+datasets/
+ECHO is on.
+models/*.pkl
+models/*.h5
+models/*.joblib
+ECHO is on.
+.env
+.env.local
+ECHO is on.
+.idea/
+.vscode/
+*.swp
+*.swo
+ECHO is on.
+__pycache__
+"datasets/" 
