@@ -58,8 +58,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         print(f"Dataset already exists: {existing_dataset.name}")
         return {
             "name": existing_dataset.name,
-            "start_date": existing_dataset.start_date.isoformat(),  # Convert to string
-            "end_date": existing_dataset.end_date.isoformat(),      # Convert to string
+            "start_date": existing_dataset.start_date,  # Convert to string
+            "end_date": existing_dataset.end_date,      # Convert to string
             "model": existing_dataset.model,
             "id": existing_dataset.id,
             "created_at": existing_dataset.created_at.isoformat()
@@ -142,8 +142,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
     return {
         "id": new_dataset.id,  # Use the auto-generated ID from the database
         "name": new_dataset.name,
-        "start_date": new_dataset.start_date.isoformat(),  # Convert to string
-        "end_date": new_dataset.end_date.isoformat(),      # Convert to string
+        "start_date": new_dataset.start_date,  # Convert to string
+        "end_date": new_dataset.end_date,      # Convert to string
         "model": new_dataset.model,
         "created_at": new_dataset.created_at.isoformat()
     }

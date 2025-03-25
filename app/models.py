@@ -21,8 +21,8 @@ class UserModel(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    full_name = Column(String)
-    company_name = Column(String)
+    full_name = Column(String(255))
+    company_name = Column(String(255))
     
     # Many-to-many relationship with datasets
     datasets = relationship("DatasetModel", secondary=user_datasets, back_populates="users")
@@ -31,10 +31,10 @@ class DatasetModel(Base):
     __tablename__ = "datasets"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    start_date = Column(String)
-    end_date = Column(String)
-    model = Column(String)
+    name = Column(String(255), index=True)
+    start_date = Column(String(255))
+    end_date = Column(String(255))
+    model = Column(String(255))
     created_at = Column(Date)
     
     # Many-to-many relationship with users
@@ -47,7 +47,7 @@ class ImageModel(Base):
     __tablename__ = "images"
 
     id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String, index=True)
+    filename = Column(String(255), index=True)
     
     # Many-to-many relationship with datasets
     datasets = relationship("DatasetModel", secondary=dataset_images, back_populates="images")
