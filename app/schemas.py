@@ -1,7 +1,8 @@
 # app/schemas.py
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator, validator
 from datetime import date, datetime
 from typing import List, Optional
+from ultralytics import YOLO
 
 # Pydantic schema for User
 class UserBase(BaseModel):
@@ -51,9 +52,36 @@ class DatasetResponse(BaseModel):
     end_date: date    # Use date instead of str
     model: str
     created_at: str
+    users: List[int]  # List of user IDs
+    images: List[int] # List of image IDs
 
 class CreateDatasetRequest(BaseModel):
     model: str
     start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     user_ids: List[int] = []
+
+class ModelResponse(BaseModel):
+    id: int
+    name: str
+    model_type: str
+    model_path: str
+    input_size: int
+    class_names: List[str]
+    device: str
+    is_active: bool
+    last_used: datetime
+
+    @field_validator('class_names', mode='before')
+    @classmethod
+    def convert_class_names(cls, v):
+        if isinstance(v, dict):
+            return list(v.values())  # Convert {'0':'class0'} to ['class0']
+        if isinstance(v, str):
+            return [v]  # Convert string to single-item list
+        if not isinstance(v, list):
+            raise ValueError("class_names must be a list, dict, or str")
+        return v
+    
+    class Config:
+        from_attributes = True

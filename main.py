@@ -1,15 +1,21 @@
-import json
 from typing import List
-
+import os
+import uuid
 import requests
 from app import models
+from app.annotation_service import auto_annotate, process_validated_annotations
 from app.database import SessionLocal
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, File, HTTPException, Depends, UploadFile
 from app import crud, schemas
-from app.crud import API_USERS, create_dataset
-from app.models import DatasetModel, ImageModel, UserModel
+from app.crud import API_USERS
+from app.model_service import register_existing_models, list_models
+from app.models import ModelModel, UserModel
+from app.schemas import ModelResponse
 from sqlalchemy.orm import Session
-from app.schemas import DatasetResponse, UserResponse, ImageResponse
+from app.schemas import (
+    UserResponse
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
 app = FastAPI()
 
@@ -18,6 +24,8 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 API_USERS = "https://api.pcs-agri.com/users"
+UPLOAD_DIR = "temp_uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def get_db():
     db = SessionLocal()
@@ -26,6 +34,13 @@ def get_db():
     finally:
         db.close()
 
+@app.on_event("startup")
+async def startup_event():
+    db = SessionLocal()
+    try:
+        register_existing_models(db=db)
+    finally:
+        db.close()
 
 @app.post("/datasets/", response_model=schemas.DatasetResponse)
 async def create_dataset(
@@ -76,27 +91,26 @@ async def list_users(db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Endpoint to list all users
 @app.get("/users/", response_model=List[UserResponse])
 async def get_users(db: Session = Depends(get_db)):
     """
     Endpoint to list all users stored in the database.
     """
-    return await list_users(db)
-
-async def list_users(db: Session):
-    """
-    This function lists all users stored in the database.
-    """
-    users = db.query(UserModel).all()
-    return [
-        {
-            "id": user.id,
-            "full_name": user.full_name,
-            "company_name": user.company_name,
-        }
-        for user in users
-    ]
+    try:
+        users = db.query(UserModel).all()
+        return [
+            {
+                "id": user.id,
+                "full_name": user.full_name,
+                "company_name": user.company_name,
+            }
+            for user in users
+        ]
+    except Exception as e:
+        # Log the error
+        print(f"Error in get_users: {str(e)}")
+        # Re-raise or return a custom error
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.get("/images/{dataset_id}", response_model=List[schemas.ImageResponse])
 async def images(dataset_id: int, db: Session = Depends(get_db)):
@@ -107,3 +121,44 @@ async def images(dataset_id: int, db: Session = Depends(get_db)):
 async def list_datasets(db: Session = Depends(get_db)):
     datasets = crud.list_datasets(db=db)  # List all datasets from the database
     return datasets
+
+@app.get("/models/", response_model=List[ModelResponse])
+def list_models(db: Session = Depends(get_db)):
+    models = db.query(ModelModel).all()
+    
+    # Ensure each model's class_names is properly formatted
+    for model in models:
+        if isinstance(model.class_names, dict):
+            model.class_names = list(model.class_names.values())
+    
+    return models
+
+@app.get("/models/{model_id}", response_model=ModelResponse)
+def get_model(model_id: int, db: Session = Depends(get_db)):
+    model = db.query(ModelModel).filter(ModelModel.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    # Ensure class_names is properly formatted
+    if isinstance(model.class_names, dict):
+        model.class_names = list(model.class_names.values())
+    
+    return model
+
+@app.get("/annotate/{dataset_id}/{model_id}")
+def annotate_images(
+    dataset_id: int, 
+    model_id: int, 
+    db: Session = Depends(get_db)
+):
+    auto_annotate(dataset_id=dataset_id, model_id=model_id, db=db)
+    return {"message": "Auto-annotation completed successfully."}
+
+@app.post("/datasets/{dataset_id}/process-validated-annotations")
+async def process_annotations_endpoint(
+    dataset_id: str, 
+    annotations_zip: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    validated_path = await process_validated_annotations(dataset_id, annotations_zip, db)
+    return {"message": "Validated annotations processed successfully", "path": validated_path}

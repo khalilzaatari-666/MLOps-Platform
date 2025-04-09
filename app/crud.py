@@ -202,22 +202,6 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
         print(f"Error fetching images: {response.status_code} {response.text}")
         return []
 
-
-def list_users(db: Session):
-    """
-    This function lists all users stored in the database.
-    """
-    users = db.query(UserModel).all()
-    return [
-        {
-            "id": user.id,
-            "full_name": user.full_name,
-            "company_name": user.company_name,
-            "datasets": [dataset.id for dataset in user.datasets],  # Extract dataset IDs
-        }
-        for user in users
-    ]
-
 def list_datasets(db: Session):
     """
     This function lists all datasets stored in the database.
@@ -230,7 +214,7 @@ def list_datasets(db: Session):
             "start_date": dataset.start_date,  # datetime.date object
             "end_date": dataset.end_date,      # datetime.date object
             "model": dataset.model,
-            "created_at": dataset.created_at.date(),
+            "created_at": dataset.created_at.isoformat(),
             "users": [user.id for user in dataset.users],  # List of user IDs
             "images": [image.id for image in dataset.images],  # List of image IDs
         }
