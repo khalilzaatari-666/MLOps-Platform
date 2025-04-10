@@ -1,21 +1,21 @@
-from typing import List
+import io
+from pathlib import Path
+from typing import List, Literal
 import os
-import uuid
+import zipfile
 import requests
 from app import models
 from app.annotation_service import auto_annotate, process_validated_annotations
 from app.database import SessionLocal
-from fastapi import FastAPI, File, HTTPException, Depends, UploadFile
+from fastapi import APIRouter, FastAPI, File, HTTPException, Depends, UploadFile
+from fastapi.responses import StreamingResponse
 from app import crud, schemas
 from app.crud import API_USERS
-from app.model_service import register_existing_models, list_models
-from app.models import ModelModel, UserModel
+from app.model_service import prepare_yolo_dataset_by_id, register_existing_models
+from app.models import DatasetModel, ModelModel, UserModel
 from app.schemas import ModelResponse
 from sqlalchemy.orm import Session
-from app.schemas import (
-    UserResponse
-)
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.schemas import UserResponse
 
 app = FastAPI()
 
@@ -162,3 +162,98 @@ async def process_annotations_endpoint(
 ):
     validated_path = await process_validated_annotations(dataset_id, annotations_zip, db)
     return {"message": "Validated annotations processed successfully", "path": validated_path}
+
+@app.get("/datasets/{dataset_id}/download/{folder_type}")
+async def download_dataset_folder(
+    dataset_id: str,
+    folder_type: Literal["raw", "auto_annotated", "labels", "validated"],
+    db: Session = Depends(get_db)
+):
+    """
+    Download a specific folder from a dataset as a zip file.
+    
+    Args:
+        dataset_id: The ID of the dataset
+        folder_type: Type of folder to download (raw, auto_annotated, labels, validated)
+        db: Database session
+        
+    Returns:
+        A streaming response with the zipped folder content
+    """
+    # Check if dataset exists
+    dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Create the folder path based on the folder type
+    dataset_path = os.path.join("datasets", dataset.name)
+    folder_path = os.path.join(dataset_path, folder_type)
+    
+    # Check if the folder exists
+    if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+        raise HTTPException(
+            status_code=404, 
+            detail=f"The {folder_type} folder for dataset '{dataset.name}' does not exist"
+        )
+    
+    # Check if the folder is empty
+    if not os.listdir(folder_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"The {folder_type} folder for dataset '{dataset.name}' is empty"
+        )
+    
+    # Create a zip file in memory
+    zip_io = io.BytesIO()
+    with zipfile.ZipFile(zip_io, mode='w', compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for root, _, files in os.walk(folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                # Calculate the relative path to maintain directory structure in the zip
+                arcname = os.path.relpath(file_path, folder_path)
+                zip_file.write(file_path, arcname)
+    
+    # Seek to the beginning of the BytesIO object
+    zip_io.seek(0)
+    
+    # Prepare the response with appropriate headers
+    filename = f"{dataset.name}_{folder_type}.zip"
+    
+    return StreamingResponse(
+        zip_io,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
+
+@app.post("/yolo-split/{dataset_id}")
+def create_yolo_split(
+    dataset_id: int, 
+    db: Session = Depends(get_db)
+):
+    try:
+        yaml_path = prepare_yolo_dataset_by_id(
+            db=db,
+            dataset_id=dataset_id,
+            overwrite=True  # Set to True for testing
+        )
+        
+        # Count files in each split to verify
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        dataset_path = os.path.join("datasets", dataset.name)
+        output_dir = os.path.join(dataset_path, "yolo_splits")
+        
+        file_counts = {}
+        for split in ['train', 'val', 'test']:
+            img_count = len(list(Path(os.path.join(output_dir, split, 'images')).glob('*.*')))
+            label_count = len(list(Path(os.path.join(output_dir, split, 'labels')).glob('*.txt')))
+            file_counts[split] = {'images': img_count, 'labels': label_count}
+            
+        return {
+            "status": "success",
+            "yaml_path": yaml_path,
+            "file_counts": file_counts
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

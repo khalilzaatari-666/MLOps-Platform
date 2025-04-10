@@ -2,6 +2,7 @@ from datetime import datetime
 import math
 from pathlib import Path
 from typing import Optional
+from fastapi import HTTPException
 from ultralytics import YOLO
 import os
 from sqlalchemy.orm import Session
@@ -43,20 +44,11 @@ def register_existing_models(db: Session, models_dir: str = "models"):
     
     db.commit()
 
-def list_models(db: Session):
-    """
-    List all registered YOLO models
-    """
-    models = db.query(ModelModel).all()
-    return models
-
 def prepare_yolo_dataset_by_id(
     db: Session,
     dataset_id: int,
-    base_datasets_dir: str = "datasets",
     split_ratios: dict = None,
     random_state: int = 42,
-    class_names: Optional[list] = None,
     overwrite: bool = False
 ) -> str:
     """
@@ -67,7 +59,6 @@ def prepare_yolo_dataset_by_id(
         dataset_id: ID of the dataset in database
         split_ratios: Dict with 'train', 'val', 'test' ratios (must sum to 1)
         random_state: Random seed for reproducibility
-        class_names: Optional list of class names (if not stored in DB)
         overwrite: Whether to overwrite existing splits
     
     Returns:
@@ -91,9 +82,14 @@ def prepare_yolo_dataset_by_id(
         raise ValueError(f"Dataset with ID {dataset_id} not found")
     
     # Construct dataset path from name
-    dataset_path = os.path.join(base_datasets_dir, dataset.name)
+    dataset_path = os.path.join("datasets", dataset.name)
     if not os.path.exists(dataset_path):
         raise ValueError(f"Dataset folder not found at: {dataset_path}")
+
+    # Check if raw folder exists
+    raw_folder = os.path.join(dataset_path, "raw")
+    if not os.path.exists(raw_folder):
+        raise ValueError(f"Raw folder not found at: {raw_folder}")
 
     # Create output directory inside the dataset folder
     output_dir = os.path.join(dataset_path, "yolo_splits")
@@ -105,6 +101,8 @@ def prepare_yolo_dataset_by_id(
             existing_yaml = os.path.join(output_dir, "data.yaml")
             if os.path.exists(existing_yaml):
                 return existing_yaml
+    
+    os.makedirs(output_dir, exist_ok=True)
 
     # Create split directories
     splits = ['train', 'val', 'test']
@@ -113,49 +111,62 @@ def prepare_yolo_dataset_by_id(
         os.makedirs(os.path.join(split_dir, 'images'), exist_ok=True)
         os.makedirs(os.path.join(split_dir, 'labels'), exist_ok=True)
 
-    # Get list of image files
-    image_files = list(Path(os.path.join(dataset_path, 'raw')).glob('*.*'))
-    image_stems = [f.stem for f in image_files if f.suffix.lower() in ['.jpg', '.jpeg', '.png']]
+    # Get list of image files directly from raw folder
+    image_files = []
+    for ext in ['.jpg', '.jpeg', '.png']:
+        image_files.extend(list(Path(raw_folder).glob(f'*{ext}')))
+    
+    if not image_files:
+        raise ValueError(f"No image files found in {raw_folder}")
+    
+    # Extract image stems for splitting
+    image_stems = [f.stem for f in image_files]
 
     # Split dataset according to custom ratios
     val_test_ratio = split_ratios['val'] + split_ratios['test']
-    train, val_test = train_test_split(image_stems, test_size=val_test_ratio, random_state=random_state)
+    train_stems, val_test_stems = train_test_split(image_stems, test_size=val_test_ratio, random_state=random_state)
 
     # Adjust test ratio within the val+test subset
-    test_ratio = split_ratios['test'] / val_test_ratio
-    val, test = train_test_split(val_test, test_size=test_ratio, random_state=random_state)
+    test_ratio = split_ratios['test'] / val_test_ratio if val_test_ratio > 0 else 0
+    val_stems, test_stems = train_test_split(val_test_stems, test_size=test_ratio, random_state=random_state) if val_test_stems else ([], [])
 
-    # Function to copy files
-    def copy_files(filenames, split):
-        for stem in filenames:
-            img_ext = next((e for e in ['.jpg', '.jpeg', '.png'] if os.path.exists(os.path.join(dataset_path, 'images', f"{stem}{e}"))), None)
-            if img_ext:
-                shutil.copy(
-                    os.path.join(dataset_path, 'images', f"{stem}{img_ext}"),
-                    os.path.join(output_dir, split, 'images', f"{stem}{img_ext}")
-                )
-                label_file = os.path.join(dataset_path, 'labels', f"{stem}.txt")
-                if os.path.exists(label_file):
-                    shutil.copy(
-                        label_file,
-                        os.path.join(output_dir, split, 'labels', f"{stem}.txt"))
+    # Map of stems to their split destination
+    stem_to_split = {}
+    for stem in train_stems:
+        stem_to_split[stem] = 'train'
+    for stem in val_stems:
+        stem_to_split[stem] = 'val'
+    for stem in test_stems:
+        stem_to_split[stem] = 'test'
+
+    # Copy files from raw to appropriate splits
+    labels_dir = os.path.join(dataset_path, "labels")
+    has_labels = os.path.exists(labels_dir)
     
-    # Copy files to respective splits
-    copy_files(train, 'train')
-    copy_files(val, 'val')
-    copy_files(test, 'test')
+    for img_file in image_files:
+        stem = img_file.stem
+        split = stem_to_split.get(stem)
+        if not split:
+            continue  # Skip if not in any split (shouldn't happen)
+        
+        # Copy image
+        dest_img = os.path.join(output_dir, split, 'images', img_file.name)
+        shutil.copy(img_file, dest_img)
+        
+        # Copy label if it exists
+        if has_labels:
+            label_file = os.path.join(labels_dir, f"{stem}.txt")
+            if os.path.exists(label_file):
+                dest_label = os.path.join(output_dir, split, 'labels', f"{stem}.txt")
+                shutil.copy(label_file, dest_label)
 
-    # Get class names
-    if class_names is None:
-        class_names = dataset.class_names or ["object"]
-
-    # Create data.yaml file
+    # Create data.yaml file with the requested structure
     data = {
-        'train': f"yolo_splits/train",
-        'val': f"yolo_splits/val",
-        'test': f"yolo_splits/test",
-        'nc': len(class_names),
-        'names': {i: name for i, name in enumerate(class_names)}
+        'train': f"datasets/{dataset.name}/yolo_splits/train",
+        'val': f"datasets/{dataset.name}/yolo_splits/val",
+        'test': f"datasets/{dataset.name}/yolo_splits/test",
+        'nc': 1,
+        'names': {0: "1"}
     }
 
     yaml_path = os.path.join(output_dir, 'data.yaml')
@@ -164,4 +175,3 @@ def prepare_yolo_dataset_by_id(
 
     # Return path to the data.yaml file
     return yaml_path
-
