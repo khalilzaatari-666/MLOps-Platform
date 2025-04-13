@@ -1,8 +1,10 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Date, Boolean, DateTime, JSON
+import uuid
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum
 from sqlalchemy.orm import relationship
 from ultralytics import YOLO
 from app.database import Base
+from app.schemas import TrainingStatus
 
 # Association Table (Datasets ↔ Images)
 dataset_images = Table(
@@ -19,6 +21,7 @@ user_datasets = Table(
     Column('dataset_id', Integer, ForeignKey('datasets.id'), primary_key=True)
 )
 
+# Model for storing metadata of users
 class UserModel(Base):
     "Client model for storing clients metadata."
     __tablename__ = "users"
@@ -30,6 +33,7 @@ class UserModel(Base):
     # Many-to-many relationship with datasets
     datasets = relationship("DatasetModel", secondary=user_datasets, back_populates="users")
 
+# Model for storing metadata of datasets
 class DatasetModel(Base):
     "Dataset model for storing dataset metadata."
     __tablename__ = "datasets"
@@ -43,10 +47,17 @@ class DatasetModel(Base):
     
     # Many-to-many relationship with users
     users = relationship("UserModel", secondary=user_datasets, back_populates="datasets")
-    
     # Many-to-many relationship with images
     images = relationship("ImageModel", secondary=dataset_images, back_populates="datasets")
+    # One-to-many relationship with training tasks
+    test_tasks = relationship("TestTask", back_populates="dataset")
+    # One-to-many relationship with training tasks
+    best_model = relationship("BestModel", back_populates="dataset", uselist=False)
+    # One-to-many relationship with training tasks
+    training_tasks = relationship("TrainingTask", back_populates="dataset")
 
+
+# Model for storing metadata of images
 class ImageModel(Base):
     "Image model for storing image metadata."
     __tablename__ = "images"
@@ -58,6 +69,8 @@ class ImageModel(Base):
     datasets = relationship("DatasetModel", secondary=dataset_images, back_populates="images")
     bounding_boxes = relationship("BoundingBox", back_populates="image", cascade="all, delete-orphan")
 
+
+# Model for storing metadata of pre-existing local YOLO models
 class ModelModel(Base):
     """Tracks metadata for pre-existing local YOLO models"""
     __tablename__ = "models"
@@ -72,6 +85,7 @@ class ModelModel(Base):
     is_active = Column(Boolean, default=True)
     last_used = Column(DateTime)
 
+# Bounding Box model
 class BoundingBox(Base):
     __tablename__ = "bounding_boxes"
     id = Column(Integer, primary_key=True, index=True)
@@ -89,3 +103,80 @@ class BoundingBox(Base):
 
     # Relationship to Image (one-way to Model)
     image = relationship("ImageModel", back_populates="bounding_boxes")
+
+class TrainingTask(Base):
+    __tablename__ = "training_tasks"
+   
+    id = Column(String(36), primary_key=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    status = Column(Enum(TrainingStatus))
+    params = Column(JSON)
+    results = Column(JSON)
+    model_path = Column(String(255))  # Reasonable path length
+    queue_position = Column(Integer)
+    dataset_path = Column(String(255))  # Reasonable path length
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    error = Column(String(500))
+
+    # Relationship to DatasetModel
+    dataset = relationship("DatasetModel", back_populates="training_tasks")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "dataset_id": self.dataset_id,
+            "status": self.status,
+            "params": self.params,
+            "results": self.results,
+            "model_path": self.model_path,
+            "queue_position": self.queue_position,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "error": self.error
+        }
+    
+class TestTask(Base):
+    __tablename__ = "test_tasks"
+   
+    id = Column(String(36), primary_key=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    model_path = Column(String(255))  # Reasonable path length
+    status = Column(Enum(TrainingStatus))
+    results = Column(JSON)
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    error = Column(String(500))
+
+    # Relationship to DatasetModel
+    dataset = relationship("DatasetModel", back_populates="test_tasks")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "dataset_id": self.dataset_id,
+            "model_path": self.model_path,
+            "status": self.status,
+            "results": self.results,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "error": self
+        }
+
+
+# Add BestModel table
+class BestModel(Base):
+    __tablename__ = "best_models"
+   
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), unique=True)
+    task_id = Column(String(36), ForeignKey("training_tasks.id"))
+    model_path = Column(String(255), nullable=False)
+    model_info = Column(JSON, nullable=True)
+    score = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+   
+    # Relationships
+    dataset = relationship("DatasetModel", back_populates="best_model")
+    training_task = relationship("TrainingTask")
+

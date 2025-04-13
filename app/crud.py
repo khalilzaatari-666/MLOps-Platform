@@ -1,11 +1,19 @@
-from datetime import date, datetime
+from datetime import datetime
+from operator import and_
+from pathlib import Path
 from fastapi import HTTPException
 import json
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, Literal
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
 import requests
-from app.models import DatasetModel, ImageModel, UserModel
+from app.models import DatasetModel, ImageModel, UserModel, dataset_images
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 API_IMAGES_INFO = "https://api.pcs-agri.com/images_info"
 API_DOWNLOAD_IMAGE = "http://api.pcs-agri.com/download-image"
@@ -230,3 +238,89 @@ def list_images(dataset_id: int, db: Session):
         return {"error": "Dataset not found"}
     
     return dataset.images
+
+ImageType = Literal['raw', 'auto_annotated', 'validated']
+
+def get_dataset_image(
+    db: Session,
+    dataset_id: int,
+    image_id: int,  # Now using database image ID
+    image_type: ImageType,
+):
+    """
+    Returns an image file with database validation
+    
+    Args:
+        db: Database session
+        dataset_id: ID of the dataset
+        image_id: Database ID of the image
+        image_type: One of ['raw', 'auto_annotated', 'validated']
+        user_id: Optional user ID for access validation
+    
+    Returns:
+        FileResponse with the image file
+    
+    Raises:
+        HTTPException 404 if image/dataset not found
+        HTTPException 403 if user doesn't have access
+    """
+    try:
+        # Verify dataset exists
+        dataset = db.query(DatasetModel).filter_by(id=dataset_id).first()
+        if not dataset:
+            logger.error(f"Dataset not found: {dataset_id}")
+            raise HTTPException(status_code=404, detail="Dataset not found")
+
+        # Get image metadata from database
+        image = db.query(ImageModel).filter_by(id=image_id).first()
+        if not image:
+            logger.error(f"Image not found in DB: {image_id}")
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Verify image exists and belongs to dataset using the association table
+        association_exists = db.query(dataset_images).filter(
+            and_(
+                dataset_images.c.dataset_id == dataset_id,
+                dataset_images.c.image_id == image_id
+            )
+        ).first()
+        
+        if not association_exists:
+            raise HTTPException(
+                status_code=404,
+                detail="Image not found in specified dataset"
+            )
+        
+        # Construct the exact path: datasets/dataset.name/{image_type}/filename
+        image_path = Path("datasets") / dataset.name / image_type / image.filename
+        logger.info(f"Looking for image at: {image_path}")
+        
+        # Check if file exists
+        if not image_path.exists():
+            logger.error(f"Image file not found at: {image_path}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Image file not found at: {image_path}"
+            )
+        
+        # Determine media type from extension
+        ext = image_path.suffix.lower()
+        media_types = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.webp': 'image/webp'
+        }
+        
+        return FileResponse(
+            image_path,
+            media_type=media_types.get(ext, 'image/jpeg'),
+            filename=image_path.name
+        )
+
+    except Exception as e:
+        logger.error(f"Error in get_dataset_image: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )

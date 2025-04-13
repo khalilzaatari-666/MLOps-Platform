@@ -1,5 +1,0 @@
-# Data paths
-data:
-  raw: data/raw/
-  processed: data/processed/
-  external: data/external/

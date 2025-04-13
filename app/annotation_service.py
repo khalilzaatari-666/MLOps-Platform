@@ -249,7 +249,7 @@ async def process_validated_annotations(dataset_id: str, annotations_zip: Upload
                 )
                 
                 # Draw the bounding box
-                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 6)
                 
                 # Add class label
                 label = f"{class_name}"
