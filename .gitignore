@@ -28,6 +28,9 @@ ECHO is on.
 models/*.pkl
 models/*.h5
 models/*.joblib
+pretrained_models/*.pkl
+pretrained_models/*.h5
+pretrained_models/*.joblib
 ECHO is on.
 .env
 .env.local
