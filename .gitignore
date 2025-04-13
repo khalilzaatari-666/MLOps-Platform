@@ -31,6 +31,8 @@ models/*.joblib
 pretrained_models/*.pkl
 pretrained_models/*.h5
 pretrained_models/*.joblib
+pretrained_models
+pretrained_models/ 
 ECHO is on.
 .env
 .env.local
