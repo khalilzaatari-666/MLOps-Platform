@@ -1,6 +1,8 @@
 from datetime import datetime
+import hashlib
+import json
 import uuid
-from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum, UniqueConstraint, ForeignKeyConstraint
 from sqlalchemy.orm import relationship
 from ultralytics import YOLO
 from app.database import Base
@@ -19,6 +21,14 @@ user_datasets = Table(
     'user_datasets', Base.metadata,
     Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
     Column('dataset_id', Integer, ForeignKey('datasets.id'), primary_key=True)
+)
+
+# Association table for many-to-many
+training_instance_task_association = Table(
+    'training_instance_task_association',
+    Base.metadata,
+    Column('training_instance_id', Integer, ForeignKey('training_instances.id'), primary_key=True),
+    Column('training_task_id', String(36), ForeignKey('training_tasks.id'), primary_key=True)
 )
 
 # Model for storing metadata of users
@@ -104,6 +114,17 @@ class BoundingBox(Base):
     # Relationship to Image (one-way to Model)
     image = relationship("ImageModel", back_populates="bounding_boxes")
 
+class TrainingInstance(Base):
+    __tablename__ = "training_instances"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False)
+    
+    tasks = relationship("TrainingTask", 
+                        secondary=training_instance_task_association,
+                        back_populates="instances")
+
 class TrainingTask(Base):
     __tablename__ = "training_tasks"
    
@@ -111,6 +132,7 @@ class TrainingTask(Base):
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
     status = Column(Enum(TrainingStatus))
     params = Column(JSON)
+    params_hash = Column(String(64), nullable=False)
     results = Column(JSON)
     model_path = Column(String(255))  # Reasonable path length
     queue_position = Column(Integer)
@@ -118,9 +140,21 @@ class TrainingTask(Base):
     start_date = Column(DateTime)
     end_date = Column(DateTime)
     error = Column(String(500))
+    split_ratios = Column(JSON , nullable=True)  # Store split ratios for train/val/test
 
     # Relationship to DatasetModel
     dataset = relationship("DatasetModel", back_populates="training_tasks")
+
+    # Relationship to TrainingInstance
+    instances = relationship("TrainingInstance",
+                            secondary=training_instance_task_association,
+                            back_populates="tasks")
+
+    @staticmethod
+    def compute_params_hash(params):
+        """Create consistent hash of params JSON"""
+        params_str = json.dumps(params, sort_keys=True)  # Sort keys for consistency
+        return hashlib.sha256(params_str.encode()).hexdigest()
     
     def to_dict(self):
         return {

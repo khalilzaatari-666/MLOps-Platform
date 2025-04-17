@@ -1,6 +1,7 @@
 from datetime import datetime
 from operator import and_
 from pathlib import Path
+import re
 from fastapi import HTTPException
 import json
 import logging
@@ -45,11 +46,22 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(ALLOWED_MODELS)}.")
 
     images_info = fetch_images(db, model, start_date, end_date, user_ids)
+    if not images_info:
+        raise HTTPException(
+        status_code=404,
+        detail=f"No images found for model '{model}' and clients '{user_ids}' between {start_date} and {end_date}."
+    )
+    created_at = datetime.now()
+    start = datetime.strptime(start_date, "%Y-%m-%d").strftime("%Y%m%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d").strftime("%Y%m%d")
+    
+    # Remove special characters and spaces
+    clean_model = re.sub(r'[^a-zA-Z0-9]', '_', model.strip().lower())
 
     if not images_info:
         # Return a valid response with default values
         return {
-            "name": f"{model.capitalize()} Dataset from {start_date} to {end_date}",
+            "name": f"{clean_model}_dataset_{start}_{end}",
             "start_date": start_date,  # Keep as string
             "end_date": end_date,      # Keep as string
             "model": model,
@@ -57,8 +69,7 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
             "created_at": created_at.isoformat()
         }
 
-    created_at = datetime.now()
-    dataset_name = f"{model.capitalize()} Dataset from {start_date} to {end_date}"  # Generate the name
+    dataset_name = f"{clean_model}_dataset_{start}_{end}"  # Generate the name
 
     existing_dataset = db.query(DatasetModel).filter(DatasetModel.name == dataset_name).first()
     if existing_dataset:
@@ -113,7 +124,7 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
     print(f"Dataset folder created at: {dataset_path}")
     print(f"Raw images folder created at: {raw_images_path}")
 
-        # Create metadata.json
+    # Create metadata.json
     metadata = {
         "created_at": created_at.isoformat(),  # ISO format timestamp
         "user_ids": user_ids,                  # List of user IDs

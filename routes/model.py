@@ -1,14 +1,19 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, logger
+import mlflow
+import pandas as pd
 from sqlalchemy.orm import Session
 import os
-from typing import List, Literal
 from core.dependencies import get_db
-from app.model_service import prepare_yolo_dataset_by_id, register_existing_models
-from app.models import BestModel, DatasetModel, TestTask, TrainingTask
+from app.model_service import prepare_yolo_dataset_by_id
+from app.models import BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import VALID_METRICS, ModelSelectionConfig, TestTaskCreate, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
 from app.tasks import create_training_task, get_training_task, prepare_dataset_task, select_best_model_task, test_model_task, update_training_task
 from pathlib import Path
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -22,23 +27,12 @@ def prepare_dataset(
         yaml_path = prepare_yolo_dataset_by_id(
             db=db,
             dataset_id=dataset_id,
-            overwrite=True  # Set to True for testing
+            overwrite=False  # Set to True for testing
         )
-        
-        # Count files in each split to verify
-        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
-        dataset_path = os.path.join("datasets", dataset.name)
-        output_dir = os.path.join(dataset_path, "yolo_splits")
-        
-        file_counts = {}
-        for split in ['train', 'val', 'test']:
-            img_count = len(list(Path(os.path.join(output_dir, split, 'images')).glob('*.*')))
-            file_counts[split] = {'images': img_count}
             
         return {
             "status": "success",
-            "yaml_path": yaml_path,
-            "file_counts": file_counts
+            "yaml_path": yaml_path
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -50,57 +44,112 @@ def start_training(
 ):
     """
     Endpoint to start training models with different hyperparameters
-    on a specific dataset.
+    on a specific dataset. Deletes any existing tasks for this dataset first.
     """
     task_ids = []
     
     try:
-        # Create training tasks for each set of hyperparameters
+        # Initialize MLflow
+        mlflow.set_tracking_uri("mysql+pymysql://root:root@localhost/mlflow_tracking")
+        experiment_name = f"YOLO_Training_{request.dataset_id}"
+        mlflow.set_experiment(experiment_name)
+        
+        # Delete all existing tasks for this dataset
+        #existing_tasks = db.query(TrainingTask).filter(
+        #    TrainingTask.dataset_id == request.dataset_id
+        #).all()
+        
+        #for task in existing_tasks:
+        #    db.delete(task)
+        #db.commit()
+        #logger.info(f"Deleted {len(existing_tasks)} existing tasks for dataset {request.dataset_id}")
+
+        # Create a new training instance
+        training_instance = TrainingInstance(dataset_id=request.dataset_id)
+        db.add(training_instance)
+        db.flush()  # This gets the auto-generated ID
+
+        # Create new training tasks for each set of hyperparameters
         for i, params in enumerate(request.params_list):
+            params['use_gpu'] = request.use_gpu
             task = create_training_task(
                 db=db,
                 dataset_id=request.dataset_id,
+                training_instance_id=training_instance.id,
                 params=params,
                 queue_position=i
             )
-            task_ids.routerend(task.id)
-        
-        # Start the first task in the queue
+            task_ids.append(task.id)
+
+            # Log initial params to MLflow
+            with mlflow.start_run(run_name=f"task_{task.id[:8]}"):
+                mlflow.log_params(params)
+                mlflow.set_tag("dataset_id", str(request.dataset_id))
+                mlflow.set_tag("use_gpu", str(request.use_gpu))
+                mlflow.set_tag("task_id", str(task.id))
+                mlflow.set_tag("queue_position", str(i))
+                mlflow.set_tag("training_instance_id", str(training_instance.id))
+
+            logger.info(f"Created training task {task.id} for dataset {request.dataset_id} with queue position {i}")
+
+        # Start the first task in the queue if tasks were created
         if task_ids:
             first_task = get_training_task(db, task_ids[0])
-            prepare_dataset_task.delay(request.dataset_id, first_task.id, request.split_ratios)
+            prepare_dataset_task.delay(
+                dataset_id=request.dataset_id,
+                task_id=first_task.id,
+                split_ratios=request.split_ratios
+            )
             update_training_task(db, first_task.id, {"status": TrainingStatus.PENDING})
-        
+            logger.info(f"Started first training task {first_task.id} for dataset {request.dataset_id}")
+
         return TrainingResponse(
             task_ids=task_ids,
             status="success",
-            message=f"Successfully queued {len(task_ids)} training tasks"
+            message=f"Successfully queued {len(task_ids)} training tasks",
+            training_instance_id=training_instance.id
         )
+        
     except Exception as e:
-        logger.error(f"Failed to start training: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()  # Rollback in case of error
+        logger.error(f"Failed to start training: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start training: {str(e)}"
+        )
+
 
 @router.get("/status/{dataset_id}", response_model=TrainingStatusResponse)
 def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
     """Get status of all training tasks for a dataset"""
     try:
-        # Get all training tasks for this dataset
-        tasks = db.query(TrainingTask).filter(
-            TrainingTask.dataset_id == dataset_id
-        ).all()
+        # Step 1: Get latest training instance for the dataset
+        latest_instance = db.query(TrainingInstance).filter(
+            TrainingInstance.dataset_id == dataset_id
+        ).order_by(TrainingInstance.created_at.desc()).first()
         
+        if not latest_instance:
+            return TrainingStatusResponse(
+                dataset_id=dataset_id,
+                status="NOT_FOUND",
+                message="No training instance found for this dataset"
+            )
+        
+        # Step 2: Get all tasks associated with that instance
+        tasks = latest_instance.tasks
+
         if not tasks:
             return TrainingStatusResponse(
                 dataset_id=dataset_id,
                 status="NOT_FOUND",
                 message="No training tasks found for this dataset"
             )
-        
+       
         # Calculate overall status
         all_completed = all(task.status == TrainingStatus.COMPLETED for task in tasks)
         any_failed = any(task.status == TrainingStatus.FAILED for task in tasks)
         any_running = any(task.status in [TrainingStatus.IN_PROGRESS, TrainingStatus.PREPARING] for task in tasks)
-        
+       
         if all_completed:
             status = TrainingStatus.COMPLETED
         elif any_failed and not any_running:
@@ -109,34 +158,32 @@ def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
             status = TrainingStatus.IN_PROGRESS
         else:
             status = TrainingStatus.QUEUED
-        
-        # Get best model if exists
-        best_model = db.query(BestModel).filter(
-            BestModel.dataset_id == dataset_id
-        ).first()
-        
-        # Calculate progress
+       
+        # Calculate overall progress
         completed_count = sum(1 for task in tasks if task.status == TrainingStatus.COMPLETED)
         progress = completed_count / len(tasks) if tasks else 0
-        
+       
         # Get start and end dates
         start_dates = [task.start_date for task in tasks if task.start_date]
         end_dates = [task.end_date for task in tasks if task.end_date]
-        
+       
         start_date = min(start_dates) if start_dates else None
         end_date = max(end_dates) if end_dates and all_completed else None
-        
-        # Consolidate subtasks info
+       
+        # Consolidate subtasks info with individual progress
         subtasks = {
             task.id: {
                 "status": task.status,
                 "params": task.params,
                 "results": task.results if task.status == TrainingStatus.COMPLETED else None,
                 "error": task.error if task.status == TrainingStatus.FAILED else None,
-                "queue_position": task.queue_position
+                "queue_position": task.queue_position,
+                "progress": task.progress if hasattr(task, 'progress') else 0.0,  # Individual task progress
+                "start_date": task.start_date.isoformat() if task.start_date else None,
+                "end_date": task.end_date.isoformat() if task.end_date else None
             } for task in tasks
         }
-        
+       
         return TrainingStatusResponse(
             dataset_id=dataset_id,
             status=status,
@@ -144,10 +191,48 @@ def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
             end_date=end_date.isoformat() if end_date else None,
             progress=progress,
             subtasks=subtasks,
-            best_model=best_model.model_info if best_model else None
         )
     except Exception as e:
         logger.error(f"Failed to get training status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/training-task/{task_id}", response_model=dict)
+def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
+    """Get status of a specific training task"""
+    try:
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Training task {task_id} not found")
+
+        short_id = task_id.split('-')[0]
+        results_path = os.path.join(f"runs_{task.dataset_id}", f"train_{short_id}", "results.csv")
+
+        results_df = pd.read_csv(results_path)
+        current_epoch = len(results_df)
+        total_epochs = task.params.get("epochs", 0)
+        progress = min(round((current_epoch / total_epochs)*100) , 100) if total_epochs > 0 else 0.0
+        
+        # Get current progress and status
+        return {
+            "status": "success",
+            "task": {
+                "id": task.id,
+                "dataset_id": task.dataset_id,
+                "status": task.status,
+                "params": task.params,
+                "progress": progress if task.status == TrainingStatus.IN_PROGRESS else 0.0,
+                "start_date": task.start_date.isoformat() if task.start_date else None,
+                "end_date": task.end_date.isoformat() if task.end_date else None,
+                "results": task.results if task.status == TrainingStatus.COMPLETED else None,
+                "error": task.error if task.status == TrainingStatus.FAILED else None,
+                "queue_position": task.queue_position
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get training task status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/select-best-model", response_model=dict)

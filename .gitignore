@@ -33,6 +33,7 @@ pretrained_models/*.h5
 pretrained_models/*.joblib
 pretrained_models
 pretrained_models/ 
+runs_1/
 ECHO is on.
 .env
 .env.local
@@ -44,3 +45,10 @@ ECHO is on.
 ECHO is on.
 __pycache__
 "datasets/" 
+mlruns/
+app/mlruns/
+experiments/
+notebooks/
+temp_uploads/
+tests/
+docs/

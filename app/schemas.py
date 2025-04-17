@@ -60,8 +60,6 @@ class DatasetResponse(BaseModel):
     end_date: date    # Use date instead of str
     model: str
     created_at: str
-    users: List[int]  # List of user IDs
-    images: List[int] # List of image IDs
 
 class CreateDatasetRequest(BaseModel):
     model: str
@@ -111,6 +109,7 @@ class TrainingStatus(str, enum.Enum):
     QUEUED = "QUEUED"
     PENDING = "PENDING"
     PREPARING = "PREPARING"
+    PREPARED = "PREPARED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -119,6 +118,7 @@ class TrainModelRequest(BaseModel):
     dataset_id: int
     params_list: List[Dict[str, Any]]
     split_ratios: Optional[Dict[str, float]] = {"train": 0.7, "val": 0.2, "test": 0.1}
+    use_gpu: bool = False
 
 class TrainingResponse(BaseModel):
     task_ids: List[str]
