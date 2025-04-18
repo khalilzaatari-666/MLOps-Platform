@@ -1,4 +1,4 @@
-# app/schemas.py
+from pydantic import ConfigDict
 import enum
 from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
@@ -133,6 +133,28 @@ class TrainingStatusResponse(BaseModel):
     subtasks: Dict[str, Any] = {}
     best_model: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+class TrainingTaskSchema(BaseModel):
+    id: str
+    dataset_id: int
+    status: TrainingStatus
+    params: Dict[str, Any]
+    params_hash: str
+    results: Optional[Dict[str, Any]] = None
+    model_path: Optional[str] = None
+    queue_position: Optional[int] = None
+    dataset_path: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    error: Optional[str] = None
+    split_ratios: Optional[Dict[str, float]] = None
+    
+    model_config = ConfigDict(
+        from_attributes=True,  # Replaces orm_mode=True
+        json_encoders={
+            datetime: lambda v: v.isoformat() if v else None
+        }
+    )
 
 class HyperparameterConfig(BaseModel):
     epochs: int = Field(100, ge=10, description="Must be ≥10")

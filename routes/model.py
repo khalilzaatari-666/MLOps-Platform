@@ -333,6 +333,12 @@ def select_best_model(
             model_result = best_instance_model
         
         db.commit()
+
+        training_task = db.query(TrainingTask).filter(
+            TrainingTask.id == best_task.id
+        ).first()
+
+        task_params = training_task.params
         
         return {
             'status': 'success',
@@ -342,6 +348,7 @@ def select_best_model(
                 'instance_id': latest_instance.id,
                 'dataset_id': config.dataset_id,
                 'model_path': best_task.model_path,
+                'params': task_params,
                 'score': score,
                 'metric': config.selection_metric
             }
