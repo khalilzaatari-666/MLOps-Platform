@@ -1,15 +1,14 @@
+from datetime import datetime
 import logging
 from fastapi import APIRouter, Depends, HTTPException, logger
 import mlflow
 import pandas as pd
 from sqlalchemy.orm import Session
-import os
 from core.dependencies import get_db
 from app.model_service import prepare_yolo_dataset_by_id
-from app.models import BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
-from app.schemas import VALID_METRICS, ModelSelectionConfig, TestTaskCreate, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
-from app.tasks import create_training_task, get_training_task, prepare_dataset_task, select_best_model_task, test_model_task, update_training_task
-from pathlib import Path
+from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
+from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TestTaskCreate, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
+from app.tasks import create_training_task, get_training_task, prepare_dataset_task, test_model_task, update_training_task
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -204,31 +203,48 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
         
         if not task:
             raise HTTPException(status_code=404, detail=f"Training task {task_id} not found")
+        if task.status == TrainingStatus.IN_PROGRESS:
+            short_id = task_id.split('-')[0]
+            results_path = f"runs_{task.dataset_id}/train_{short_id}/results.csv"
 
-        short_id = task_id.split('-')[0]
-        results_path = os.path.join(f"runs_{task.dataset_id}", f"train_{short_id}", "results.csv")
-
-        results_df = pd.read_csv(results_path)
-        current_epoch = len(results_df)
-        total_epochs = task.params.get("epochs", 0)
-        progress = min(round((current_epoch / total_epochs)*100) , 100) if total_epochs > 0 else 0.0
-        
-        # Get current progress and status
-        return {
-            "status": "success",
-            "task": {
-                "id": task.id,
-                "dataset_id": task.dataset_id,
-                "status": task.status,
-                "params": task.params,
-                "progress": progress if task.status == TrainingStatus.IN_PROGRESS else 0.0,
-                "start_date": task.start_date.isoformat() if task.start_date else None,
-                "end_date": task.end_date.isoformat() if task.end_date else None,
-                "results": task.results if task.status == TrainingStatus.COMPLETED else None,
-                "error": task.error if task.status == TrainingStatus.FAILED else None,
-                "queue_position": task.queue_position
+            results_df = pd.read_csv(results_path)
+            current_epoch = len(results_df)
+            total_epochs = task.params.get("epochs", 0)
+            progress = min(round((current_epoch / total_epochs)*100) , 100) if total_epochs > 0 else 0.0
+            
+            # Get current progress and status
+            return {
+                "status": "success",
+                "task": {
+                    "id": task.id,
+                    "dataset_id": task.dataset_id,
+                    "status": task.status,
+                    "params": task.params,
+                    "progress": progress,
+                    "start_date": task.start_date.isoformat() if task.start_date else None,
+                    "end_date": task.end_date.isoformat() if task.end_date else None,
+                    "results": task.results if task.status == TrainingStatus.COMPLETED else None,
+                    "error": task.error if task.status == TrainingStatus.FAILED else None,
+                    "queue_position": task.queue_position
+                }
             }
-        }
+        else:
+            return {
+                "status": "success",
+                "task": {
+                    "id": task.id,
+                    "dataset_id": task.dataset_id,
+                    "status": task.status,
+                    "params": task.params,
+                    "progress": 100.0 if task.status == TrainingStatus.COMPLETED else 0.0,
+                    "start_date": task.start_date.isoformat() if task.start_date else None,
+                    "end_date": task.end_date.isoformat() if task.end_date else None,
+                    "results": task.results if task.status == TrainingStatus.COMPLETED else None,
+                    "error": task.error if task.status == TrainingStatus.FAILED else None,
+                    "queue_position": task.queue_position
+                }
+            }
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -240,34 +256,95 @@ def select_best_model(
     config: ModelSelectionConfig,
     db: Session = Depends(get_db)
 ):
-    """Endpoint to select the best model based on a specific metric"""
+    """Endpoint to select the best model for a specific training instance"""
     try:
-        # Validate that the selection metric is valid
-        if config.selection_metric not in VALID_METRICS:
+        # Get the latest training instance for this dataset
+        latest_instance = db.query(TrainingInstance).filter(
+            TrainingInstance.dataset_id == config.dataset_id
+        ).order_by(TrainingInstance.created_at.desc()).first()
+        
+        if not latest_instance:
             raise HTTPException(
-                status_code=400,
-                detail=f"Invalid metric: {config.selection_metric}. Valid options: {', '.join(VALID_METRICS)}"
+                status_code=404,
+                detail=f"No training instances found for dataset {config.dataset_id}"
             )
         
-        # Validate that there are completed training tasks
-        completed_tasks = db.query(TrainingTask).filter(
-            TrainingTask.dataset_id == config.dataset_id,
-            TrainingTask.status == TrainingStatus.COMPLETED
-        ).all()
+        # Find completed tasks associated with this training instance
+        completed_tasks = []
+        for task in latest_instance.tasks:
+            task_obj = db.query(TrainingTask).filter(
+                TrainingTask.id == task.id,
+                TrainingTask.status == TrainingStatus.COMPLETED
+            ).first()
+            if task_obj:
+                completed_tasks.append(task_obj)
         
         if not completed_tasks:
             raise HTTPException(
                 status_code=404,
-                detail=f"No completed training tasks found for dataset {config.dataset_id}"
+                detail=f"No completed training tasks found for the latest training instance of dataset {config.dataset_id}"
             )
         
-        # Start the selection task
-        task = select_best_model_task.delay(config.dict())
+        # Get the appropriate metric name from the mapping
+        if config.selection_metric not in METRIC_MAPPING:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid metric: {config.selection_metric}"
+            )
+        # Use the mapped YOLO metric via the model property
+        yolo_metric = METRIC_MAPPING[config.selection_metric]
+            
+        # Select the best model based on the metric
+        best_task = max(completed_tasks, key=lambda t: t.results.get(yolo_metric, -1))
+        score = best_task.results.get(yolo_metric, 0)
+        
+        # Check for existing best model for this instance
+        existing_best = db.query(BestInstanceModel).filter(
+            BestInstanceModel.instance_id == latest_instance.id
+        ).first()
+        
+        if existing_best:
+            existing_best.task_id = best_task.id
+            existing_best.model_path = best_task.model_path
+            existing_best.score = score
+            existing_best.model_info = {
+                'params': best_task.params,
+                'params_hash': best_task.params_hash,
+                'metric': config.selection_metric,
+                'score': score
+            }
+            existing_best.updated_at = datetime.utcnow()
+            model_result = existing_best
+        else:
+            best_instance_model = BestInstanceModel(
+                instance_id=latest_instance.id,
+                dataset_id=config.dataset_id,
+                task_id=best_task.id,
+                model_path=best_task.model_path,
+                score=score,
+                model_info={
+                    'params': best_task.params,
+                    'params_hash': best_task.params_hash,
+                    'metric': config.selection_metric,
+                    'score': score
+                }
+            )
+            db.add(best_instance_model)
+            model_result = best_instance_model
+        
+        db.commit()
         
         return {
-            "status": "success",
-            "message": "Best model selection started",
-            "task_id": task.id
+            'status': 'success',
+            'best_model': {
+                'id': model_result.id if hasattr(model_result, 'id') else None,
+                'task_id': best_task.id,
+                'instance_id': latest_instance.id,
+                'dataset_id': config.dataset_id,
+                'model_path': best_task.model_path,
+                'score': score,
+                'metric': config.selection_metric
+            }
         }
     except HTTPException:
         raise

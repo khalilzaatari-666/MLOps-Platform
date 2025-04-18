@@ -14,7 +14,7 @@ import torch
 from ultralytics import YOLO
 from app.database import SessionLocal
 from app.model_service import prepare_yolo_dataset_by_id
-from app.models import BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
+from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
 from core.settings import PROJECT_ROOT
 
@@ -33,9 +33,17 @@ METRIC_MAPPING = {
 }
 
 def compute_params_hash(params: Dict[str, Any]) -> str:
-    """Create consistent hash of params JSON"""
-    params_str = json.dumps(params, sort_keys=True)  # Sort keys for consistency
-    return hashlib.sha256(params_str.encode()).hexdigest()
+    import hashlib
+    import json
+    from datetime import datetime
+    
+    # Add timestamp to ensure uniqueness
+    unique_params = params.copy()
+    unique_params["_unique"] = datetime.utcnow().isoformat()  # Or use uuid.uuid4()
+    
+    return hashlib.sha256(
+        json.dumps(unique_params, sort_keys=True).encode()
+    ).hexdigest()
 
 # Database utility functions
 def get_training_task(db: Session, task_id: str):
@@ -45,15 +53,6 @@ def get_training_task(db: Session, task_id: str):
     return task
 
 def create_training_task(db: Session, dataset_id: int, params: Dict[str, Any], training_instance_id: int ,queue_position: Optional[int] = None) -> TrainingTask:
-    # Check if task with same dataset_id and params already exists
-    params_hash = compute_params_hash(params)
-    existing_task = db.query(TrainingTask).filter(
-        TrainingTask.dataset_id == dataset_id,
-        TrainingTask.params_hash == params_hash
-    ).first()
-    
-    if existing_task:
-        raise ValueError(f"Training task with these parameters already exists (ID: {existing_task.id})")
     
     task_id = str(uuid.uuid4())
     
@@ -67,7 +66,7 @@ def create_training_task(db: Session, dataset_id: int, params: Dict[str, Any], t
         dataset_id=dataset_id,
         status=status,
         params=params,
-        params_hash=params_hash,
+        params_hash=compute_params_hash(params),
         queue_position=queue_position,
         start_date=datetime.utcnow()
     )
@@ -330,71 +329,6 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         db.close()
         advance_queue(db, task.dataset_id)
 
-@app.task(bind=True, name="select_best_model")
-def select_best_model_task(selection_config: dict):
-    """Select the best model based on a specific metric"""
-    db = SessionLocal()
-    try:
-        config = ModelSelectionConfig(**selection_config)
-        
-        tasks = db.query(TrainingTask).filter(
-            TrainingTask.dataset_id == config.dataset_id,
-            TrainingTask.status == TrainingStatus.COMPLETED
-        ).all()
-
-        if not tasks:
-            raise ValueError(f"No completed training tasks found for dataset {config.dataset_id}")
-
-        best_task = max(tasks, key=lambda t: t.results.get(config.yolo_metric, -1))
-        score = best_task.results.get(config.yolo_metric, 0)
-        
-        existing_best = db.query(BestModel).filter(
-            BestModel.dataset_id == config.dataset_id
-        ).first()
-        
-        if existing_best:
-            existing_best.task_id = best_task.id
-            existing_best.model_path = best_task.model_path
-            existing_best.score = score
-            existing_best.model_info = {
-                'params': best_task.params,
-                'params_hash': best_task.params_hash,
-                'metric': config.selection_metric,
-                'score': score
-            }
-            existing_best.created_at = datetime.utcnow()
-        else:
-            best_model = BestModel(
-                dataset_id=config.dataset_id,
-                task_id=best_task.id,
-                model_path=best_task.model_path,
-                score=score,
-                model_info={
-                    'params': best_task.params,
-                    'params_hash': best_task.params_hash,
-                    'metric': config.selection_metric,
-                    'score': score
-                }
-            )
-            db.add(best_model)
-        
-        db.commit()
-        
-        return {
-            'status': 'SUCCESS',
-            'best_model': {
-                'task_id': best_task.id,
-                'dataset_id': config.dataset_id,
-                'model_path': best_task.model_path,
-                'score': score,
-                'metric': config.selection_metric
-            }
-        }
-    except Exception as e:
-        logger.error(f"Failed to select best model: {str(e)}")
-        raise
-    finally:
-        db.close()
 
 @app.task(bind=True, name="test_model")
 def test_model_task(test_config: dict):

@@ -5,7 +5,6 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Literal, Optional
 from ultralytics import YOLO
 
-VALID_METRICS = Literal['accuracy', 'precision', 'recall']
 METRIC_MAPPING = {
     'accuracy': 'metrics/mAP50(B)',
     'precision': 'metrics/precision(B)',
@@ -62,7 +61,7 @@ class DatasetResponse(BaseModel):
     created_at: str
 
 class CreateDatasetRequest(BaseModel):
-    model: str
+    model: str = Field(..., description="The model to use for the dataset")
     start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     user_ids: List[int] = []
@@ -154,12 +153,11 @@ class TrainingTaskCreate(BaseModel):
 
 class ModelSelectionConfig(BaseModel):
     dataset_id: int
-    selection_metric: str = Field(..., description="Metric to use for model selection")
+    selection_metric: Literal['accuracy', 'precision', 'recall']
+    instance_id: Optional[int] = None
 
     @property
     def yolo_metric(self) -> str:
-        if self.selection_metric not in METRIC_MAPPING:
-            raise ValueError(f"Invalid metric: {self.selection_metric}. Valid options: {', '.join(VALID_METRICS)}")
         return METRIC_MAPPING[self.selection_metric]
 
 class TestTaskCreate(BaseModel):

@@ -2,6 +2,7 @@ from datetime import datetime
 import hashlib
 import json
 import uuid
+from pydantic import Field
 from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum, UniqueConstraint, ForeignKeyConstraint
 from sqlalchemy.orm import relationship
 from ultralytics import YOLO
@@ -127,6 +128,9 @@ class TrainingInstance(Base):
 
 class TrainingTask(Base):
     __tablename__ = "training_tasks"
+    __table_args__ = (
+        UniqueConstraint('dataset_id', 'params_hash', name='uq_dataset_id_params_hash'),
+    )
    
     id = Column(String(36), primary_key=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
@@ -153,8 +157,13 @@ class TrainingTask(Base):
     @staticmethod
     def compute_params_hash(params):
         """Create consistent hash of params JSON"""
-        params_str = json.dumps(params, sort_keys=True)  # Sort keys for consistency
-        return hashlib.sha256(params_str.encode()).hexdigest()
+        # Add timestamp to ensure uniqueness
+        unique_params = params.copy()
+        unique_params["_unique"] = datetime.utcnow().isoformat()  # Or use uuid.uuid4()
+        
+        return hashlib.sha256(
+            json.dumps(unique_params, sort_keys=True).encode()
+        ).hexdigest()
     
     def to_dict(self):
         return {
@@ -169,6 +178,24 @@ class TrainingTask(Base):
             "end_date": self.end_date.isoformat() if self.end_date else None,
             "error": self.error
         }
+    
+class BestInstanceModel(Base):
+    __tablename__ = "best_instance_models"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    instance_id = Column(Integer, ForeignKey("training_instances.id"), unique=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    task_id = Column(String(36), ForeignKey("training_tasks.id"))
+    model_path = Column(String(255))
+    score = Column(Float)
+    model_info = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Define relationships
+    instance = relationship("TrainingInstance")
+    dataset = relationship("DatasetModel")
+    task = relationship("TrainingTask")
     
 class TestTask(Base):
     __tablename__ = "test_tasks"
