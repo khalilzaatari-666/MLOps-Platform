@@ -1,0 +1,154 @@
+services:
+  # Database services
+  mysql:
+    image: mysql:8
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mlops
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    networks:
+      - mlops-network
+
+  # Database management UI
+  adminer:
+    image: adminer:latest
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql
+    depends_on:
+      - mysql
+    networks:
+      - mlops-network
+
+  # Message broker
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    networks:
+      - mlops-network
+
+  # Cache and result backend
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    networks:
+      - mlops-network
+
+  # MLflow tracking server
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_TRACKING_URI: mysql+pymysql://root:root@mysql:3306/mlflow_tracking
+    command: >
+      sh -c "
+      echo 'Waiting for MySQL to be ready...' &&
+      until nc -z mysql 3306; do
+        echo 'Waiting for MySQL...'
+        sleep 2
+      done &&
+      echo 'MySQL is ready!' &&
+      mlflow server 
+      --host 0.0.0.0 
+      --backend-store-uri mysql+pymysql://root:root@mysql:3306/mlflow_tracking 
+      --default-artifact-root ./mlruns"
+    depends_on:
+      - mysql
+    networks:
+      - mlops-network
+
+  # Monitoring stack
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - mlops-network
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - mlops-network
+
+  tempo:
+    image: grafana/tempo:latest
+    ports:
+      - "3200:3200"
+    volumes:
+      - ./monitoring/tempo-config.yaml:/etc/tempo/config.yaml
+      - tempo_data:/var/tempo
+    command: -config.file=/etc/tempo/config.yaml
+    networks:
+      - mlops-network
+
+  mimir:
+    image: grafana/mimir:latest
+    ports:
+      - "9009:9009"
+    volumes:
+      - ./monitoring/mimir-config.yaml:/etc/mimir/config.yaml
+      - mimir_data:/data
+    command: -config.file=/etc/mimir/config.yaml
+    networks:
+      - mlops-network
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+      - mimir
+    networks:
+      - mlops-network
+
+volumes:
+  mysql_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  mimir_data:
+  grafana_data:
+
+networks:
+  mlops-network: 

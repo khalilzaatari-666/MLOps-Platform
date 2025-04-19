@@ -1,0 +1,33 @@
+# Settings apply across all Linux distros running on WSL 2
+[wsl2]
+
+# Limits VM memory to use no more than 4 GB, this can be set as whole numbers using GB or MB
+memory=4GB 
+
+# Sets the VM to use two virtual processors
+processors=2
+
+# Sets amount of swap storage space to 8GB
+swap=8GB
+
+# Sets swapfile path location, default is %USERPROFILE%\AppData\Local\Temp\swap.vhdx
+#swapfile=C:\\temp\\wsl-swap.vhdx
+
+# Disable page reporting so WSL retains all allocated memory claimed from Windows
+#pageReporting=false
+
+# Turn off default connection to bind WSL 2 localhost to Windows localhost
+localhostForwarding=true
+
+# Disables nested virtualization
+nestedVirtualization=false
+
+# Turns on output console showing contents of dmesg when opening a WSL 2 distro for debugging
+#debugConsole=true
+
+# Enable experimental features
+#experimental.useOverlayfs=true
+experimental.autoMemoryReclaim=dropcache 
+
+# Comment out the line below if you're having port forwarding issues
+#experimental.networkingMode=mirrored 

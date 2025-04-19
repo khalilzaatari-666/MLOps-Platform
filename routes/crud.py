@@ -4,7 +4,7 @@ from typing import List
 import requests
 from app import crud, models, schemas
 from core.dependencies import get_db
-from app.schemas import UserResponse, ModelResponse
+from app.schemas import DatasetStatus, UserResponse, ModelResponse
 from app.models import UserModel, ModelModel
 from core.settings import API_USERS, HEADERS
 
@@ -23,6 +23,20 @@ async def create_dataset(
         user_ids=dataset_request.user_ids
     )
     return dataset
+
+@router.get("/datasets/{status}", response_model=List[schemas.DatasetResponse])
+async def get_dataset_by_status(
+    status: str,
+    db: Session = Depends(get_db)
+):
+    if status.lower() not in ["raw", "auto_annotated", "validated"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    dataset = crud.get_dataset_by_status(
+        db=db,
+        status=status
+    )
+    return dataset
+    
 
 @router.post("/list_users/", response_model=List[schemas.UserResponse])
 async def list_users(db: Session = Depends(get_db)):

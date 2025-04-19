@@ -3,11 +3,11 @@ import hashlib
 import json
 import uuid
 from pydantic import Field
-from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum, UniqueConstraint, ForeignKeyConstraint
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum, UniqueConstraint
 from sqlalchemy.orm import relationship
 from ultralytics import YOLO
 from app.database import Base
-from app.schemas import TrainingStatus
+from app.schemas import TrainingStatus, DatasetStatus
 
 # Association Table (Datasets ↔ Images)
 dataset_images = Table(
@@ -55,6 +55,7 @@ class DatasetModel(Base):
     end_date = Column(String(255))
     model = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(Enum(DatasetStatus), default=DatasetStatus.RAW)
     
     # Many-to-many relationship with users
     users = relationship("UserModel", secondary=user_datasets, back_populates="datasets")
@@ -91,10 +92,15 @@ class ModelModel(Base):
     model_type = Column(String(50))
     model_path = Column(String(512))
     input_size = Column(Integer)
-    class_names = Column(JSON(none_as_null=True), nullable=False, server_default='[]')
+    class_names = Column(JSON(none_as_null=True), nullable=False)
     device = Column(String(20), default='cpu')
     is_active = Column(Boolean, default=True)
     last_used = Column(DateTime)
+
+    def __init__(self, **kwargs):
+        if 'class_names' not in kwargs:
+            kwargs['class_names'] = []
+        super().__init__(**kwargs)
 
 # Bounding Box model
 class BoundingBox(Base):
@@ -202,6 +208,7 @@ class TestTask(Base):
    
     id = Column(String(36), primary_key=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    dataset_tested_on = Column(Integer)
     model_path = Column(String(255))  # Reasonable path length
     status = Column(Enum(TrainingStatus))
     results = Column(JSON)

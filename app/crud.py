@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 import os
 import requests
 from app.models import DatasetModel, ImageModel, UserModel, dataset_images
+from app.schemas import DatasetStatus
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -66,7 +67,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
             "end_date": end_date,      # Keep as string
             "model": model,
             "id": -1 , # Use a placeholder ID for empty datasets
-            "created_at": created_at.isoformat()
+            "created_at": created_at.isoformat(),
+            "status": DatasetStatus.RAW
         }
 
     dataset_name = f"{clean_model}_dataset_{start}_{end}"  # Generate the name
@@ -81,7 +83,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
             "end_date": existing_dataset.end_date,      # Convert to string
             "model": existing_dataset.model,
             "id": existing_dataset.id,
-            "created_at": existing_dataset.created_at.isoformat()
+            "created_at": existing_dataset.created_at.isoformat(),
+            "status": existing_dataset.status
         }
 
     new_dataset = DatasetModel(
@@ -89,7 +92,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         start_date=start_date,
         end_date=end_date,
         model=model,
-        created_at=created_at
+        created_at=created_at,
+        status=DatasetStatus.RAW
     )
 
     # Associate users with dataset
@@ -236,9 +240,18 @@ def list_datasets(db: Session):
             "created_at": dataset.created_at.isoformat(),
             "users": [user.id for user in dataset.users],  # List of user IDs
             "images": [image.id for image in dataset.images],  # List of image IDs
+            "status": dataset.status
         }
         for dataset in datasets
     ]
+
+def get_dataset_by_status(db: Session, status: DatasetStatus): 
+    """
+    Get all datasets by status
+    """
+    datasets = db.query(DatasetModel).filter(DatasetModel.status == status).all()
+    return datasets
+
 
 def list_images(dataset_id: int, db: Session):
     """

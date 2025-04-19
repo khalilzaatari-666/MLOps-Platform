@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+from pathlib import Path
 import time
 from celery import Celery
 import uuid
@@ -119,37 +120,6 @@ def advance_queue(db: Session, dataset_id: Optional[int] = None):
         return next_task
     return None
 
-# API Endpoint to get best model info
-def get_best_model_info(dataset_id: int):
-    """
-    API function to get information about the best model for a dataset
-    
-    Args:
-        dataset_id: ID of the dataset
-        
-    Returns:
-        Dict with best model info or None if not found
-    """
-    db = SessionLocal()
-    try:
-        best_model = db.query(BestModel).filter(BestModel.dataset_id == dataset_id).first()
-        
-        if not best_model:
-            return {'status': 'NOT_FOUND', 'dataset_id': dataset_id}
-        
-        return {
-            'status': 'SUCCESS',
-            'dataset_id': dataset_id,
-            'best_model_id': best_model.id,
-            'best_model_task_id': best_model.task_id,
-            'model_path': best_model.model_path,
-            'score': best_model.score,
-            'model_info': best_model.model_info,
-            'created_at': best_model.created_at.isoformat()
-        }
-    finally:
-        db.close()
-
 # API Endpoint to get test task status
 def get_test_task_status(test_task_id: str):
     """Get status and results of a test task"""
@@ -183,7 +153,8 @@ def get_dataset_yaml_path(dataset_id: int) -> str:
     dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
     if not dataset:
         raise ValueError(f"Dataset {dataset_id} not found")
-    return f"datasets/{dataset.name}/yolo_splits/data.yaml"
+    yaml_path = os.path.join(PROJECT_ROOT, "datasets", dataset.name, "yolo_splits", "data.yaml")
+    return yaml_path
 
 
 @app.task(bind=True, name="prepare_dataset")
@@ -330,43 +301,101 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         advance_queue(db, task.dataset_id)
 
 
-@app.task(bind=True, name="test_model")
-def test_model_task(test_config: dict):
+def test_model_task(dataset_id: int):
     """Test a trained model on a dataset"""
     db = SessionLocal()
-    task_id = str(uuid.uuid4())
     
     try:
-        config = TestTaskCreate(**test_config)
+        last_best_model = db.query(BestInstanceModel).order_by(BestInstanceModel.instance_id.desc()).first()
+        if not last_best_model:
+            raise ValueError("No available model to test")
         
-        task = TestTask(
-            id=task_id,
-            dataset_id=config.dataset_id,
-            model_path=config.model_path,
-            status=TrainingStatus.IN_PROGRESS,
-            start_date=datetime.utcnow()
-        )
-        db.add(task)
-        db.commit()
+        if last_best_model.dataset_id == dataset_id:
+            raise ValueError("Model already trained on this dataset")
+        
+        # Prepare dataset paths
+        try:
+            data_yaml = prepare_yolo_dataset_by_id(
+                db,
+                dataset_id,
+                split_ratios={"train": 0.6, "val": 0.2, "test": 0.2},
+                overwrite=True
+            )
+            if not Path(data_yaml).exists():
+                raise FileNotFoundError(f"Dataset YAML not found at: {data_yaml}")
+        except Exception as e:
+            raise RuntimeError(f"Dataset preparation failed: {str(e)}")
 
-        data_yaml = get_dataset_yaml_path(config.dataset_id)
-
-        model = YOLO(f"{config.model_path}/weights/best.pt")
-        results = model.val(data=data_yaml)
-
-        task.status = TrainingStatus.COMPLETED
-        task.end_date = datetime.utcnow()
-        task.results = results.results_dict
-        db.commit()
-
-        return task.to_dict()
-    except Exception as e:
-        logger.error(f"Model testing failed: {str(e)}")
-        if 'task' in locals():
-            task.status = TrainingStatus.FAILED
-            task.error = str(e)
-            task.end_date = datetime.utcnow()
+        # Validate model path
+        model_file = Path(last_best_model.model_path) / "weights" / "best.pt"
+        if not model_file.exists():
+            raise FileNotFoundError(f"Model weights not found at: {model_file}")
+        
+        # Record start time
+        start_time = datetime.utcnow()
+        
+        # Load model
+        try:
+            logger.info(f"Loading model from {model_file}")
+            model = YOLO(str(model_file))
+        except Exception as e:
+            raise RuntimeError(f"Model loading failed: {str(e)}")
+        
+        # Run validation
+        try:
+            logger.info(f"Starting validation on dataset ID: {last_best_model.dataset_id}")
+            results = model.val(data=data_yaml, split='test')
+            
+            # Record end time
+            end_time = datetime.utcnow()
+            
+            if not hasattr(results, 'results_dict'):
+                raise RuntimeError("Validation did not return expected results format")
+            
+            # Extract and format metrics
+            metrics = {
+                'precision': results.results_dict.get('metrics/precision(B)'),
+                'recall': results.results_dict.get('metrics/recall(B)'),
+                'map50': results.results_dict.get('metrics/mAP50(B)'),
+                'map': results.results_dict.get('metrics/mAP50-95(B)'),
+                'inference_speed': results.speed.get('inference'),
+                'test_timestamp': datetime.utcnow().isoformat(),
+                'model_id': last_best_model.instance_id,
+                'model_path': str(model_file),
+                'dataset_id': last_best_model.dataset_id,
+                'trained_on_dataset': dataset_id,
+                'start_date': start_time.isoformat(),
+                'end_date': end_time.isoformat(),
+                'duration_seconds': (end_time - start_time).total_seconds()
+            }
+            
+            logger.info(
+                f"Test completed. mAP50: {metrics['map50']:.3f}, "
+                f"Precision: {metrics['precision']:.3f}, "
+                f"Recall: {metrics['recall']:.3f}, "
+                f"Duration: {metrics['duration_seconds']:.2f} seconds"
+            )
+        
+            test_task = TestTask(
+                id=str(uuid.uuid4()),
+                dataset_id=last_best_model.dataset_id,
+                dataset_tested_on=dataset_id,
+                model_path=str(model_file),
+                status=TrainingStatus.COMPLETED,
+                start_date=start_time,
+                end_date=end_time,
+                results=metrics
+            )
+            db.add(test_task)
             db.commit()
-        raise
+            db.refresh(test_task)
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Validation failed: {str(e)}", exc_info=True)
+            raise RuntimeError(f"Model testing failed: {str(e)}")
+        
     finally:
         db.close()
+

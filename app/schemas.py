@@ -58,7 +58,16 @@ class DatasetResponse(BaseModel):
     start_date: date  # Use date instead of str
     end_date: date    # Use date instead of str
     model: str
-    created_at: str
+    created_at: date
+    users_id: List[int] = Field(alias="users")
+    status: str
+    class Config:
+        from_attributes = True
+
+class DatasetStatus(str, enum.Enum):
+    RAW = "RAW"  
+    AUTO_ANNOTATED = "AUTO_ANNOTATED"
+    VALIDATED = "VALIDATED"
 
 class CreateDatasetRequest(BaseModel):
     model: str = Field(..., description="The model to use for the dataset")
@@ -116,7 +125,7 @@ class TrainingStatus(str, enum.Enum):
 class TrainModelRequest(BaseModel):
     dataset_id: int
     params_list: List[Dict[str, Any]]
-    split_ratios: Optional[Dict[str, float]] = {"train": 0.7, "val": 0.2, "test": 0.1}
+    split_ratios: Optional[Dict[str, float]] = {"train": 0.7, "val": 0.3}
     use_gpu: bool = False
 
 class TrainingResponse(BaseModel):
@@ -183,5 +192,4 @@ class ModelSelectionConfig(BaseModel):
         return METRIC_MAPPING[self.selection_metric]
 
 class TestTaskCreate(BaseModel):
-    model_path: str
     dataset_id: int

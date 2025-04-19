@@ -9,6 +9,7 @@ from fastapi import HTTPException, UploadFile
 from requests import Session
 from ultralytics import YOLO
 from app.models import BoundingBox, DatasetModel, ImageModel, ModelModel
+from app.schemas import DatasetStatus
 
 def auto_annotate(dataset_id : str, model_id : str, db: Session) -> str:
     """
@@ -111,6 +112,9 @@ def auto_annotate(dataset_id : str, model_id : str, db: Session) -> str:
         class_names_path = os.path.join(labels_output, "labels.txt")
         with open(class_names_path, 'w') as f:
             f.write("\n".join(detected_classes))
+        
+        dataset.status = DatasetStatus.AUTO_ANNOTATED
+        db.commit()
 
     print(f"Auto-annotation completed for dataset {dataset.name} using model {model.name}.")
 
@@ -158,5 +162,8 @@ async def process_validated_annotations(dataset_id: str, annotations_zip: Upload
 
     # Clean up temporary zip file
     os.remove(temp_zip_path)
+
+    dataset.status = DatasetStatus.VALIDATED    
+    db.commit()
 
     return f"Annotations successfully extracted to {labels_path}"

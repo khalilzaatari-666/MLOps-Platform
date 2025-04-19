@@ -1,6 +1,8 @@
 from datetime import datetime
 import logging
-from fastapi import APIRouter, Depends, HTTPException, logger
+from typing import Dict
+from fastapi import APIRouter, Depends, HTTPException, logger, status
+from fastapi.responses import JSONResponse
 import mlflow
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -20,12 +22,18 @@ router = APIRouter()
 @router.post("/datasets/{dataset_id}/prepare")
 def prepare_dataset(
     dataset_id: int, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    split_ratios: dict = None
 ):
     try:
+        # Default split ratios if not provided
+        if split_ratios is None:
+            split_ratios = {'train': 0.7, 'val': 0.3}
+        
         yaml_path = prepare_yolo_dataset_by_id(
             db=db,
             dataset_id=dataset_id,
+            split_ratios=split_ratios,
             overwrite=False  # Set to True for testing
         )
             
@@ -382,20 +390,43 @@ def get_best_model_info(dataset_id: int, db: Session = Depends(get_db)):
         logger.error(f"Failed to get best model info: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/test-model", response_model=dict)
-def test_model(config: TestTaskCreate, db: Session = Depends(get_db)):
-    """Endpoint to test a trained model on a dataset"""
+@router.post("/test-model/{dataset_id}", response_model=Dict, status_code=status.HTTP_200_OK)
+async def test_model_endpoint(dataset_id: int, db: Session = Depends(get_db)):
+    """
+    Endpoint to test a trained model on a specified dataset
+    
+    Parameters:
+    - dataset_id: ID of the dataset to test on
+    
+    Returns:
+    - Test metrics including precision, recall, mAP scores
+    """
     try:
-        task = test_model_task.delay(config.dict())
+        test_results = test_model_task(dataset_id)
         
-        return {
-            "status": "success",
-            "message": "Model testing started",
-            "test_task_id": task.id
-        }
+        return JSONResponse(
+            content=test_results,
+            status_code=status.HTTP_200_OK
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except RuntimeError as e:
+        logger.error(f"Testing failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
     except Exception as e:
-        logger.error(f"Failed to start model testing: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during testing"
+        )
 
 @router.get("/test-status/{test_task_id}")
 def get_test_task_status(test_task_id: str, db: Session = Depends(get_db)):
