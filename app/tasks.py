@@ -3,11 +3,13 @@ import hashlib
 import json
 import logging
 import os
+os.environ['MLFLOW_TRACKING_URI'] = ''
+os.environ['MLFLOW_DISABLE'] = 'true'
+
 from pathlib import Path
 import time
 from celery import Celery
 import uuid
-import mlflow
 import pymysql
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional
@@ -18,6 +20,7 @@ from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
 from core.settings import PROJECT_ROOT
+from app.metrics import metrics_exporter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -156,6 +159,8 @@ def get_dataset_yaml_path(dataset_id: int) -> str:
     yaml_path = os.path.join(PROJECT_ROOT, "datasets", dataset.name, "yolo_splits", "data.yaml")
     return yaml_path
 
+metrics_exporter.start_server(port=9090)
+
 
 @app.task(bind=True, name="prepare_dataset")
 def prepare_dataset_task(self, dataset_id: int, task_id: str, split_ratios: Dict):
@@ -222,20 +227,17 @@ def prepare_dataset_task(self, dataset_id: int, task_id: str, split_ratios: Dict
 @app.task(bind=True, name="train_model")
 def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
     """Train a single model with the task's hyperparameters"""
-    db = SessionLocal()
+    db = SessionLocal()\
     
     try:
         task = get_training_task(db, task_id)
         if task.status != TrainingStatus.PREPARED:
             raise ValueError("Dataset not prepared for task")
         
-        # MLflow setup 
-        mlflow.set_tracking_uri("mysql+pymysql://root:root@localhost/mlflow_tracking")
-        experiment_name = f"YOLO_Training_{dataset_id}"
-        mlflow.set_experiment(experiment_name)
-        
         logger.info(f"Starting training for task {task_id}")
         update_training_task(db, task_id, {'status': TrainingStatus.IN_PROGRESS})
+
+        metrics_exporter.record_training_start(dataset_id, task_id)
 
         os.chdir(PROJECT_ROOT)
         
@@ -244,41 +246,49 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
         logger.info(f"Training on device: {device}")
 
-        with mlflow.start_run(run_name=f"task_{task_id[:8]}") as run:
-            # Log all parameters
-            mlflow.pytorch.autolog()
-            mlflow.log_params(task.params)
-            mlflow.set_tag("celery_task_id", self.request.id)
-            mlflow.set_tag("device", str(device))
-        
-            model = YOLO(f"experiments/{experiment_name}/yolov8n.pt")
-            results = model.train(
-                data=yaml_path,
-                epochs=task.params.get('epochs', 100),
-                batch=task.params.get('batch_size', 16),
-                lr0=task.params.get('lr0', 0.01),
-                lrf=task.params.get('lrf', 0.1),
-                momentum=task.params.get('momentum', 0.937),
-                weight_decay=task.params.get('weight_decay', 0.0005),
-                warmup_epochs=task.params.get('warmup_epochs', 3.0),
-                warmup_momentum=task.params.get('warmup_momentum', 0.8),
-                box=task.params.get('box', 7.5),
-                cls=task.params.get('cls', 0.5),
-                dfl=task.params.get('dfl', 1.5),
-                project=f"runs_{task.dataset_id}",
-                name=f"train_{task_id[:8]}",
-                exist_ok=True,
-                device=device
-            )
+        start_time = datetime.utcnow()
 
-            print(results.results_dict)
-            
-            update_training_task(db, task_id, {
-                'status': TrainingStatus.COMPLETED,
-                'results': results.results_dict,
-                'model_path': results.save_dir,
-                'mlflow_run_id': run.info.run_id
-            })
+        model = YOLO(f"experiments/{task_id}/yolov8n.pt")
+        
+        # Remove all MLflow callbacks
+        model.callbacks = {
+            k: v for k, v in model.callbacks.items() 
+            if not k.startswith('mlflow')
+        }
+
+        results = model.train(
+            data=yaml_path,
+            epochs=task.params.get('epochs', 100),
+            batch=task.params.get('batch_size', 16),
+            lr0=task.params.get('lr0', 0.01),
+            lrf=task.params.get('lrf', 0.1),
+            momentum=task.params.get('momentum', 0.937),
+            weight_decay=task.params.get('weight_decay', 0.0005),
+            warmup_epochs=task.params.get('warmup_epochs', 3.0),
+            warmup_momentum=task.params.get('warmup_momentum', 0.8),
+            box=task.params.get('box', 7.5),
+            cls=task.params.get('cls', 0.5),
+            dfl=task.params.get('dfl', 1.5),
+            project=f"runs_{task.dataset_id}",
+            name=f"train_{task_id[:8]}",
+            exist_ok=True,
+            device=device
+        )
+
+        end_time = datetime.utcnow()
+        duration_seconds = (end_time - start_time).total_seconds()
+        
+        update_training_task(db, task_id, {
+            'status': TrainingStatus.COMPLETED,
+            'results': results.results_dict,
+            'model_path': results.save_dir,
+        })
+
+        metrics_exporter.record_training_completion(
+            dataset_id=dataset_id, 
+            task_id=task_id, 
+            results=results.results_dict, 
+            duration_seconds=duration_seconds)
         
         return {
             'status': 'SUCCESS',
@@ -286,7 +296,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
             'dataset_id': dataset_id,
             'results': results.results_dict,
             'model_path': str(results.save_dir),
-            "mlflow_run_id": run.info.run_id
+            "duration_seconds": duration_seconds
         }
     except Exception as e:
         logger.error(f"Training failed for task {task_id}: {str(e)}")
@@ -295,8 +305,11 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
             'error': str(e),
             'end_date': datetime.utcnow()
         })
+        metrics_exporter.record_training_failure(dataset_id=dataset_id, task_id=task_id)
         raise
     finally:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         db.close()
         advance_queue(db, task.dataset_id)
 
@@ -348,6 +361,7 @@ def test_model_task(dataset_id: int):
             
             # Record end time
             end_time = datetime.utcnow()
+            duration_seconds = (end_time - start_time).total_seconds()
             
             if not hasattr(results, 'results_dict'):
                 raise RuntimeError("Validation did not return expected results format")
@@ -366,8 +380,15 @@ def test_model_task(dataset_id: int):
                 'trained_on_dataset': dataset_id,
                 'start_date': start_time.isoformat(),
                 'end_date': end_time.isoformat(),
-                'duration_seconds': (end_time - start_time).total_seconds()
+                'duration_seconds': duration_seconds
             }
+
+            metrics_exporter.record_test_completion(
+                dataset_id=dataset_id,
+                model_id=last_best_model.instance_id,
+                results=metrics,
+                duration_seconds=duration_seconds
+            )
             
             logger.info(
                 f"Test completed. mAP50: {metrics['map50']:.3f}, "

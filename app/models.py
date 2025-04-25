@@ -67,6 +67,8 @@ class DatasetModel(Base):
     best_model = relationship("BestModel", back_populates="dataset", uselist=False)
     # One-to-many relationship with training tasks
     training_tasks = relationship("TrainingTask", back_populates="dataset")
+    # One-to-many relationship with training instances
+    training_instances = relationship("TrainingInstance", back_populates="dataset")
 
 
 # Model for storing metadata of images
@@ -131,6 +133,7 @@ class TrainingInstance(Base):
     tasks = relationship("TrainingTask", 
                         secondary=training_instance_task_association,
                         back_populates="instances")
+    dataset = relationship("DatasetModel", back_populates="training_instances")
 
 class TrainingTask(Base):
     __tablename__ = "training_tasks"
@@ -149,7 +152,7 @@ class TrainingTask(Base):
     dataset_path = Column(String(255))  # Reasonable path length
     start_date = Column(DateTime)
     end_date = Column(DateTime)
-    error = Column(String(500))
+    error = Column(String(1024))
     split_ratios = Column(JSON , nullable=True)  # Store split ratios for train/val/test
 
     # Relationship to DatasetModel

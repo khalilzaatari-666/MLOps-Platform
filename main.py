@@ -1,23 +1,13 @@
 import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.responses import RedirectResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
-from app.metrics import metrics_exporter
-from routes import model
-from app.database import engine, Base
 from app.database import SessionLocal
 from app.model_service import register_existing_models
-from routes import annotation, crud, file_handling, mlflow_service, training_instances
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Create all tables
-Base.metadata.create_all(bind=engine)
-logger.info("Tables created successfully!")
+from routes import annotation, crud, file_handling, training_instances, model_service
 
 # Initialize FastAPI app
 app = FastAPI(title="MLOps Platform API")
@@ -31,8 +21,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Start metrics server
-metrics_exporter.start_server()
+instrumentator = Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+)
+
+instrumentator.instrument(app).expose(app, include_in_schema=False)
 
 @app.get("/")
 async def root():
@@ -56,8 +50,7 @@ async def health_check():
 app.include_router(annotation.router, prefix="", tags=["annotation"])
 app.include_router(crud.router, prefix="", tags=["crud"])
 app.include_router(file_handling.router, prefix="", tags=["file_handling"])
-app.include_router(model.router, prefix="", tags=["model"])
-app.include_router(mlflow_service.router, prefix="", tags=["mlflow_service"])
+app.include_router(model_service.router, prefix="", tags=["model"])
 app.include_router(training_instances.router, prefix="", tags=["training-instances"])
 
 @app.on_event("startup")

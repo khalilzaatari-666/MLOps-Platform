@@ -1,17 +1,29 @@
 services:
   # Database services
   mysql:
-    image: mysql:8
+    image: mysql:8.4.5
+    container_name: mlops_mysql
     ports:
       - "3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: mlops
+      MYSQL_DATABASE: pcsagri
+      MYSQL_USER: khalil
+      MYSQL_PASSWORD: khalil123
+      MYSQL_ROOT_HOST: '%'  # Allow root access from any host
     volumes:
-      - mysql_data:/var/lib/mysql
-      - ./mysql-init:/docker-entrypoint-initdb.d
+      - ./mysqldata:/var/lib/mysql
+      - ./mysql-init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - mlops-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command:
+      - --skip-log-bin
+      
 
   # Database management UI
   adminer:
@@ -35,6 +47,7 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-proto_dist inet_tcp"
     networks:
       - mlops-network
 
@@ -46,31 +59,6 @@ services:
     networks:
       - mlops-network
 
-  # MLflow tracking server
-  mlflow:
-    build:
-      context: .
-      dockerfile: Dockerfile.mlflow
-    ports:
-      - "5000:5000"
-    environment:
-      MLFLOW_TRACKING_URI: mysql+pymysql://root:root@mysql:3306/mlflow_tracking
-    command: >
-      sh -c "
-      echo 'Waiting for MySQL to be ready...' &&
-      until nc -z mysql 3306; do
-        echo 'Waiting for MySQL...'
-        sleep 2
-      done &&
-      echo 'MySQL is ready!' &&
-      mlflow server 
-      --host 0.0.0.0 
-      --backend-store-uri mysql+pymysql://root:root@mysql:3306/mlflow_tracking 
-      --default-artifact-root ./mlruns"
-    depends_on:
-      - mysql
-    networks:
-      - mlops-network
 
   # Monitoring stack
   prometheus:
@@ -85,13 +73,15 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
+    depends_on:
+      - pushgateway
     networks:
       - mlops-network
 
   loki:
     image: grafana/loki:latest
     ports:
-      - "3100:3100"
+      - "3101:3100"
     volumes:
       - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
       - loki_data:/loki
@@ -110,21 +100,10 @@ services:
     networks:
       - mlops-network
 
-  mimir:
-    image: grafana/mimir:latest
-    ports:
-      - "9009:9009"
-    volumes:
-      - ./monitoring/mimir-config.yaml:/etc/mimir/config.yaml
-      - mimir_data:/data
-    command: -config.file=/etc/mimir/config.yaml
-    networks:
-      - mlops-network
-
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
@@ -138,17 +117,29 @@ services:
       - prometheus
       - loki
       - tempo
-      - mimir
     networks:
       - mlops-network
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    restart: unless-stopped
+    ports:
+      - "9091:9091"
+    networks:
+      - mlops-network
+    volumes:
+      - pushgateway_data:/pushgateway
 
 volumes:
   mysql_data:
   prometheus_data:
   loki_data:
   tempo_data:
-  mimir_data:
   grafana_data:
+  pushgateway_data:
+    driver: local
 
 networks:
   mlops-network: 
+    driver: bridge

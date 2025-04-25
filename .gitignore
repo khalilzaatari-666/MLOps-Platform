@@ -53,3 +53,4 @@ temp_uploads/
 tests/
 docs/
 runs/
+mysqldata/

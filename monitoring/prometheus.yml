@@ -1,23 +1,21 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
-
-  - job_name: 'mlops_api'
+  - job_name: 'yolo_trainer'
     static_configs:
-      - targets: ['host.docker.internal:8000']  # Your FastAPI metrics endpoint
-    metrics_path: '/metrics'
-
-  - job_name: 'model_training'
+      - targets: ['localhost:8000']
+    scrape_interval: 5s  # More frequent scraping for training metrics
+  - job_name: 'model_metrics'  # You might not need this if it's redundant
     static_configs:
-      - targets: ['host.docker.internal:8001']  # Metrics from your training processes
+      - targets: ['host.docker.internal:8000']
     metrics_path: '/metrics'
-
-# Temporarily disabled until Mimir is properly configured
-# remote_write:
-#   - url: http://mimir:9009/api/v1/push
-#     send_exemplars: true 
+    scrape_interval: 15s
+  - job_name: 'pushgateway'
+    scrape_interval: 5s
+    honor_labels: true  # This is important for Pushgateway
+    static_configs:
+      - targets: ['pushgateway:9091']

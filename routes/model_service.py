@@ -3,7 +3,6 @@ import logging
 from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, logger, status
 from fastapi.responses import JSONResponse
-import mlflow
 import pandas as pd
 from sqlalchemy.orm import Session
 from core.dependencies import get_db
@@ -11,12 +10,15 @@ from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TestTaskCreate, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
 from app.tasks import create_training_task, get_training_task, prepare_dataset_task, test_model_task, update_training_task
+from app.metrics import metrics_exporter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+metrics_exporter.start_server(port=9090)
 
 # Endpoint to prepare YOLO dataset splits
 @router.post("/datasets/{dataset_id}/prepare")
@@ -56,11 +58,6 @@ def start_training(
     task_ids = []
     
     try:
-        # Initialize MLflow
-        mlflow.set_tracking_uri("mysql+pymysql://root:root@localhost/mlflow_tracking")
-        experiment_name = f"YOLO_Training_{request.dataset_id}"
-        mlflow.set_experiment(experiment_name)
-        
         # Delete all existing tasks for this dataset
         #existing_tasks = db.query(TrainingTask).filter(
         #    TrainingTask.dataset_id == request.dataset_id
@@ -87,15 +84,6 @@ def start_training(
                 queue_position=i
             )
             task_ids.append(task.id)
-
-            # Log initial params to MLflow
-            with mlflow.start_run(run_name=f"task_{task.id[:8]}"):
-                mlflow.log_params(params)
-                mlflow.set_tag("dataset_id", str(request.dataset_id))
-                mlflow.set_tag("use_gpu", str(request.use_gpu))
-                mlflow.set_tag("task_id", str(task.id))
-                mlflow.set_tag("queue_position", str(i))
-                mlflow.set_tag("training_instance_id", str(training_instance.id))
 
             logger.info(f"Created training task {task.id} for dataset {request.dataset_id} with queue position {i}")
 
@@ -125,6 +113,21 @@ def start_training(
             detail=f"Failed to start training: {str(e)}"
         )
 
+@router.get("/test-metrics")
+def test_metrics():
+    test_data = {
+        'metrics/mAP50(B)': 0.85,
+        'metrics/mAP50-95(B)': 0.72,
+        'metrics/precision(B)': 0.91,
+        'metrics/recall(B)': 0.83
+    }
+    metrics_exporter.record_training_completion(
+        dataset_id="test123",
+        task_id="test_task",
+        results=test_data,
+        duration_seconds=120
+    )
+    return {"status": "test metrics recorded"}
 
 @router.get("/status/{dataset_id}", response_model=TrainingStatusResponse)
 def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
