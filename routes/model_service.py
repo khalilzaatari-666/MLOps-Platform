@@ -8,17 +8,14 @@ from sqlalchemy.orm import Session
 from core.dependencies import get_db
 from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
-from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TestTaskCreate, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
+from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
 from app.tasks import create_training_task, get_training_task, prepare_dataset_task, test_model_task, update_training_task
-from app.metrics import metrics_exporter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-metrics_exporter.start_server(port=9090)
 
 # Endpoint to prepare YOLO dataset splits
 @router.post("/datasets/{dataset_id}/prepare")
@@ -113,22 +110,6 @@ def start_training(
             detail=f"Failed to start training: {str(e)}"
         )
 
-@router.get("/test-metrics")
-def test_metrics():
-    test_data = {
-        'metrics/mAP50(B)': 0.85,
-        'metrics/mAP50-95(B)': 0.72,
-        'metrics/precision(B)': 0.91,
-        'metrics/recall(B)': 0.83
-    }
-    metrics_exporter.record_training_completion(
-        dataset_id="test123",
-        task_id="test_task",
-        results=test_data,
-        duration_seconds=120
-    )
-    return {"status": "test metrics recorded"}
-
 @router.get("/status/{dataset_id}", response_model=TrainingStatusResponse)
 def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
     """Get status of all training tasks for a dataset"""
@@ -208,54 +189,100 @@ def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
     
 @router.get("/training-task/{task_id}", response_model=dict)
 def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
-    """Get status of a specific training task"""
+    """Get status of a specific training task with current metrics"""
     try:
         task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
-        
+       
         if not task:
             raise HTTPException(status_code=404, detail=f"Training task {task_id} not found")
+        
+        # Prepare the base response
+        response = {
+            "status": "success",
+            "task": {
+                "id": task.id,
+                "dataset_id": task.dataset_id,
+                "status": task.status,
+                "params": task.params,
+                "start_date": task.start_date.isoformat() if task.start_date else None,
+                "end_date": task.end_date.isoformat() if task.end_date else None,
+                "error": task.error if task.status == TrainingStatus.FAILED else None,
+                "queue_position": task.queue_position
+            }
+        }
+        
+        # Handle metrics based on task status
         if task.status == TrainingStatus.IN_PROGRESS:
             short_id = task_id.split('-')[0]
             results_path = f"runs_{task.dataset_id}/train_{short_id}/results.csv"
-
-            results_df = pd.read_csv(results_path)
-            current_epoch = len(results_df)
-            total_epochs = task.params.get("epochs", 0)
-            progress = min(round((current_epoch / total_epochs)*100) , 100) if total_epochs > 0 else 0.0
             
-            # Get current progress and status
-            return {
-                "status": "success",
-                "task": {
-                    "id": task.id,
-                    "dataset_id": task.dataset_id,
-                    "status": task.status,
-                    "params": task.params,
-                    "progress": progress,
-                    "start_date": task.start_date.isoformat() if task.start_date else None,
-                    "end_date": task.end_date.isoformat() if task.end_date else None,
-                    "results": task.results if task.status == TrainingStatus.COMPLETED else None,
-                    "error": task.error if task.status == TrainingStatus.FAILED else None,
-                    "queue_position": task.queue_position
-                }
-            }
-        else:
-            return {
-                "status": "success",
-                "task": {
-                    "id": task.id,
-                    "dataset_id": task.dataset_id,
-                    "status": task.status,
-                    "params": task.params,
-                    "progress": 100.0 if task.status == TrainingStatus.COMPLETED else 0.0,
-                    "start_date": task.start_date.isoformat() if task.start_date else None,
-                    "end_date": task.end_date.isoformat() if task.end_date else None,
-                    "results": task.results if task.status == TrainingStatus.COMPLETED else None,
-                    "error": task.error if task.status == TrainingStatus.FAILED else None,
-                    "queue_position": task.queue_position
-                }
-            }
+            try:
+                # Read the CSV with the training metrics
+                results_df = pd.read_csv(results_path)
+                current_epoch = len(results_df)
+                total_epochs = task.params.get("epochs", 0)
+                progress = min(round((current_epoch / total_epochs)*100), 100) if total_epochs > 0 else 0.0
+                
+                # Get the latest metrics (last row of the CSV)
+                if not results_df.empty:
+                    latest_metrics = results_df.iloc[-1].to_dict()
+                    # Clean up the metrics for JSON serialization
+                    metrics = {
+                        "epoch": current_epoch,
+                        "metrics/mAP50(B)": float(latest_metrics.get("metrics/mAP50(B)", 0)),
+                        "metrics/mAP50-95(B)": float(latest_metrics.get("metrics/mAP50-95(B)", 0)),
+                        "metrics/precision(B)": float(latest_metrics.get("metrics/precision(B)", 0)),
+                        "metrics/recall(B)": float(latest_metrics.get("metrics/recall(B)", 0))
+                    }
+                    
+                    # Get historical metrics for plotting
+                    metrics_history = []
+                    for _, row in results_df.iterrows():
+                        metrics_history.append({
+                            "epoch": int(row.get("epoch", 0)),
+                            "metrics/mAP50(B)": float(row.get("metrics/mAP50(B)", 0)),
+                            "metrics/mAP50-95(B)": float(row.get("metrics/mAP50-95(B)", 0)),
+                            "metrics/precision(B)": float(row.get("metrics/precision(B)", 0)),
+                            "metrics/recall(B)": float(row.get("metrics/recall(B)", 0))
+                        })
+                    
+                    response["task"]["current_metrics"] = metrics
+                    response["task"]["metrics_history"] = metrics_history
+                else:
+                    response["task"]["current_metrics"] = {}
+                    response["task"]["metrics_history"] = []
+                
+                response["task"]["progress"] = progress
+                response["task"]["current_epoch"] = current_epoch
+                response["task"]["total_epochs"] = total_epochs
+                
+            except FileNotFoundError:
+                # If the results file doesn't exist yet
+                response["task"]["progress"] = 0
+                response["task"]["current_metrics"] = {}
+                response["task"]["metrics_history"] = []
+                response["task"]["current_epoch"] = 0
+                response["task"]["total_epochs"] = total_epochs
         
+        elif task.status == TrainingStatus.COMPLETED:
+            # For completed tasks, use the stored results
+            response["task"]["progress"] = 100.0
+            response["task"]["results"] = task.results
+            
+            # If results contains metrics information, extract it
+            if task.results and isinstance(task.results, dict):
+                response["task"]["current_metrics"] = {
+                    "metrics/mAP50(B)": task.results.get("metrics/mAP50", 0),
+                    "metrics/mAP50-95(B)": task.results.get("metrics/mAP50-95", 0),
+                    "metrics/precision(B)": task.results.get("metrics/precision", 0),
+                    "metrics/recall(B)": task.results.get("metrics/recall", 0)
+                }
+        else:
+            # For other statuses (QUEUED, FAILED, etc.)
+            response["task"]["progress"] = 0.0
+        
+        return response
+       
     except HTTPException:
         raise
     except Exception as e:
@@ -374,7 +401,7 @@ def select_best_model(
 def get_best_model_info(dataset_id: int, db: Session = Depends(get_db)):
     """Endpoint to get information about the best model for a dataset"""
     try:
-        best_model = db.query(BestModel).filter(BestModel.dataset_id == dataset_id).first()
+        best_model = (db.query(BestInstanceModel).filter(BestInstanceModel.dataset_id == dataset_id).order_by(BestInstanceModel.id.desc()) .first())
         
         if not best_model:
             return {'status': 'NOT_FOUND', 'dataset_id': dataset_id}
@@ -394,7 +421,7 @@ def get_best_model_info(dataset_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/test-model/{dataset_id}", response_model=Dict, status_code=status.HTTP_200_OK)
-async def test_model_endpoint(dataset_id: int, db: Session = Depends(get_db)):
+async def test_model(dataset_id: int):
     """
     Endpoint to test a trained model on a specified dataset
     
@@ -430,31 +457,3 @@ async def test_model_endpoint(dataset_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during testing"
         )
-
-@router.get("/test-status/{test_task_id}")
-def get_test_task_status(test_task_id: str, db: Session = Depends(get_db)):
-    """Endpoint to get status and results of a test task"""
-    try:
-        test_task = db.query(TestTask).filter(TestTask.id == test_task_id).first()
-        
-        if not test_task:
-            raise HTTPException(status_code=404, detail=f"Test task {test_task_id} not found")
-        
-        return {
-            'status': 'SUCCESS',
-            'test_task': {
-                'id': test_task.id,
-                'dataset_id': test_task.dataset_id,
-                'model_path': test_task.model_path,
-                'status': test_task.status,
-                'start_date': test_task.start_date.isoformat() if test_task.start_date else None,
-                'end_date': test_task.end_date.isoformat() if test_task.end_date else None,
-                'results': test_task.results,
-                'error': test_task.error
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get test task status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))

@@ -3,6 +3,8 @@ import hashlib
 import json
 import logging
 import os
+
+from prometheus_client import start_http_server
 os.environ['MLFLOW_TRACKING_URI'] = ''
 os.environ['MLFLOW_DISABLE'] = 'true'
 
@@ -20,7 +22,6 @@ from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
 from core.settings import PROJECT_ROOT
-from app.metrics import metrics_exporter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -159,9 +160,6 @@ def get_dataset_yaml_path(dataset_id: int) -> str:
     yaml_path = os.path.join(PROJECT_ROOT, "datasets", dataset.name, "yolo_splits", "data.yaml")
     return yaml_path
 
-metrics_exporter.start_server(port=9090)
-
-
 @app.task(bind=True, name="prepare_dataset")
 def prepare_dataset_task(self, dataset_id: int, task_id: str, split_ratios: Dict):
     """
@@ -227,35 +225,39 @@ def prepare_dataset_task(self, dataset_id: int, task_id: str, split_ratios: Dict
 @app.task(bind=True, name="train_model")
 def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
     """Train a single model with the task's hyperparameters"""
-    db = SessionLocal()\
-    
+    db = SessionLocal()
+   
     try:
         task = get_training_task(db, task_id)
         if task.status != TrainingStatus.PREPARED:
             raise ValueError("Dataset not prepared for task")
-        
+       
         logger.info(f"Starting training for task {task_id}")
         update_training_task(db, task_id, {'status': TrainingStatus.IN_PROGRESS})
-
-        metrics_exporter.record_training_start(dataset_id, task_id)
-
         os.chdir(PROJECT_ROOT)
-        
+       
         # Get device preference from task parameters
         use_gpu = task.params.get('use_gpu', True)
         device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
         logger.info(f"Training on device: {device}")
-
         start_time = datetime.utcnow()
-
-        model = YOLO(f"experiments/{task_id}/yolov8n.pt")
+        model = YOLO(f"experiments/{task.dataset_id}/yolov8n.pt")
+       
+        # Set up callback to capture metrics after each epoch
+        def on_fit_epoch_end(trainer):
+            if hasattr(trainer, 'validator'):  # Ensure validation ran
+                metrics = trainer.metrics
+                if metrics:
+                    metrics_dict = {
+                        'metrics/mAP50(B)': float(metrics.get('metrics/mAP50(B)', 0)),
+                        'metrics/mAP50-95(B)': float(metrics.get('metrics/mAP50-95(B)', 0)),
+                        'metrics/precision(B)': float(metrics.get('metrics/precision(B)', 0)),
+                        'metrics/recall(B)': float(metrics.get('metrics/recall(B)', 0))
+                    }
+                    
+        # Register callback directly
+        model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
         
-        # Remove all MLflow callbacks
-        model.callbacks = {
-            k: v for k, v in model.callbacks.items() 
-            if not k.startswith('mlflow')
-        }
-
         results = model.train(
             data=yaml_path,
             epochs=task.params.get('epochs', 100),
@@ -272,24 +274,27 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
             project=f"runs_{task.dataset_id}",
             name=f"train_{task_id[:8]}",
             exist_ok=True,
-            device=device
+            device=device,
+            val=True
         )
-
+        
         end_time = datetime.utcnow()
         duration_seconds = (end_time - start_time).total_seconds()
-        
+       
         update_training_task(db, task_id, {
             'status': TrainingStatus.COMPLETED,
             'results': results.results_dict,
             'model_path': results.save_dir,
         })
 
-        metrics_exporter.record_training_completion(
-            dataset_id=dataset_id, 
-            task_id=task_id, 
-            results=results.results_dict, 
-            duration_seconds=duration_seconds)
-        
+        final_metrics = {
+            'metrics/mAP50(B)': results.results_dict.get('metrics/mAP50', 0),
+            'metrics/mAP50-95(B)': results.results_dict.get('metrics/mAP50-95', 0),
+            'metrics/precision(B)': results.results_dict.get('metrics/precision', 0),
+            'metrics/recall(B)': results.results_dict.get('metrics/recall', 0),
+            'inference_speed': results.speed.get('inference', 0)  # ms per image
+        }
+       
         return {
             'status': 'SUCCESS',
             'task_id': task_id,
@@ -305,7 +310,6 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
             'error': str(e),
             'end_date': datetime.utcnow()
         })
-        metrics_exporter.record_training_failure(dataset_id=dataset_id, task_id=task_id)
         raise
     finally:
         if torch.cuda.is_available():
@@ -331,7 +335,7 @@ def test_model_task(dataset_id: int):
             data_yaml = prepare_yolo_dataset_by_id(
                 db,
                 dataset_id,
-                split_ratios={"train": 0.6, "val": 0.2, "test": 0.2},
+                split_ratios={"train": 0.2, "val": 0.2, "test": 0.6},
                 overwrite=True
             )
             if not Path(data_yaml).exists():
@@ -382,13 +386,6 @@ def test_model_task(dataset_id: int):
                 'end_date': end_time.isoformat(),
                 'duration_seconds': duration_seconds
             }
-
-            metrics_exporter.record_test_completion(
-                dataset_id=dataset_id,
-                model_id=last_best_model.instance_id,
-                results=metrics,
-                duration_seconds=duration_seconds
-            )
             
             logger.info(
                 f"Test completed. mAP50: {metrics['map50']:.3f}, "
@@ -411,7 +408,10 @@ def test_model_task(dataset_id: int):
             db.commit()
             db.refresh(test_task)
             
-            return metrics
+            return {
+                **metrics,
+                "test_task_id": test_task.id 
+            }
             
         except Exception as e:
             logger.error(f"Validation failed: {str(e)}", exc_info=True)

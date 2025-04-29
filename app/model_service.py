@@ -115,9 +115,9 @@ def prepare_yolo_dataset_by_id(
 
     # Create directory structure
     (yolo_dir / "train/images").mkdir(parents=True, exist_ok=True)
-    (yolo_dir / "train/labels").mkdir(parents=True, exist_ok=True)  # Add this
+    (yolo_dir / "train/labels").mkdir(parents=True, exist_ok=True)  
     (yolo_dir / "val/images").mkdir(parents=True, exist_ok=True)
-    (yolo_dir / "val/labels").mkdir(parents=True, exist_ok=True)    # Add this
+    (yolo_dir / "val/labels").mkdir(parents=True, exist_ok=True)    
     (yolo_dir / "test/images").mkdir(parents=True, exist_ok=True)
     (yolo_dir / "test/labels").mkdir(parents=True, exist_ok=True) 
 

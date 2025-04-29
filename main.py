@@ -1,6 +1,7 @@
 import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+import prometheus_client
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.responses import RedirectResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -28,6 +29,19 @@ instrumentator = Instrumentator(
 
 instrumentator.instrument(app).expose(app, include_in_schema=False)
 
+# Creating tables from models
+@app.on_event("startup")
+async def startup():
+    """Create database tables on startup"""
+    from app.database import Base, engine
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        register_existing_models(db=db)
+    finally:
+        db.close()
+    return "Tables created, and pre-trained models registered"
+
 @app.get("/")
 async def root():
     return RedirectResponse(url="/docs")
@@ -37,10 +51,9 @@ async def dashboard():
     """Redirect to the Grafana dashboard"""
     return RedirectResponse(url="http://localhost:3000/d/ml-metrics/ml-training-metrics?orgId=1")
 
-@app.get("/metrics", tags=["monitoring"])
+@app.get("/metrics")
 async def metrics():
-    """Endpoint for exporting Prometheus metrics"""
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    return prometheus_client.generate_latest()
 
 @app.get("/health", tags=["monitoring"])
 async def health_check():
@@ -53,11 +66,4 @@ app.include_router(file_handling.router, prefix="", tags=["file_handling"])
 app.include_router(model_service.router, prefix="", tags=["model"])
 app.include_router(training_instances.router, prefix="", tags=["training-instances"])
 
-@app.on_event("startup")
-async def startup_event():
-    db = SessionLocal()
-    try:
-        register_existing_models(db=db)
-    finally:
-        db.close()
 
