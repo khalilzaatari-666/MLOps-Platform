@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, logger, status
 from fastapi.responses import JSONResponse
 import pandas as pd
 from sqlalchemy.orm import Session
+from app.model_deployment import deploy_model_to_minio
 from core.dependencies import get_db
 from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
@@ -457,3 +458,47 @@ async def test_model(dataset_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred during testing"
         )
+
+@router.post("/deploy_model", response_model=dict)
+async def deploy_model(db: Session = Depends(get_db)):
+    """
+    Endpoint to deploy the best model to PCS-AGRI's MINIO object store.
+    """ 
+    try: 
+        # Get the latest best model
+        lastest_best_model = db.query(BestInstanceModel).order_by(BestInstanceModel.created_at.desc()).first()
+        if not lastest_best_model:
+            raise HTTPException(status_code=404, detail="No best model found")
+        
+        # Get the model path
+        model_folder = lastest_best_model.model_path
+        model_path = f"{model_folder}/weights/best.pt"
+        if not model_path:
+            raise HTTPException(status_code=404, detail="Model path not found")
+        
+        # Create a name for the model folder in the object store
+        model_dataset = db.query(DatasetModel).filter(DatasetModel.id == lastest_best_model.dataset_id).first()
+        if not model_dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        model_seed = model_dataset.model
+        current_time = datetime.now().strftime("%Y%m%d")
+        model_name = f"{model_seed}_{current_time}"
+        model_folder_name = f"models-trackseeds/models-test/model_{model_name}"
+        destination_path = f"{model_folder_name}/best.pt"
+
+        deploy_results =  deploy_model_to_minio(destination_path, model_path)
+
+        return JSONResponse(
+            content=deploy_results,
+            status_code=status.HTTP_200_OK
+        )
+    
+    except Exception as e:
+        logger.error(f"Failed to deploy model: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error while deploying the model"
+        )
+
+    

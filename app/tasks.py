@@ -1,18 +1,10 @@
 from datetime import datetime
-import hashlib
-import json
 import logging
 import os
-
-from prometheus_client import start_http_server
-os.environ['MLFLOW_TRACKING_URI'] = ''
-os.environ['MLFLOW_DISABLE'] = 'true'
-
 from pathlib import Path
 import time
 from celery import Celery
 import uuid
-import pymysql
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional
 import torch
@@ -20,16 +12,21 @@ from ultralytics import YOLO
 from app.database import SessionLocal
 from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
-from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
-from core.settings import PROJECT_ROOT
+from app.schemas import TrainingStatus
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) 
+
+load_dotenv()
+PROJECT_ROOT = os.getenv("PROJECT_ROOT")
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL")
+CELERY_BACKEND_URL = os.getenv("CELERY_BACKEND_URL")
 
 app = Celery('tasks',
-    broker='pyamqp://guest:guest@localhost:5672//',
-    backend='redis://localhost:6379/1')
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_BACKEND_URL)
 
 METRIC_MAPPING = {
     'accuracy': 'metrics/mAP50(B)',

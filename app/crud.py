@@ -12,29 +12,18 @@ import os
 import requests
 from app.models import DatasetModel, ImageModel, UserModel, dataset_images
 from app.schemas import DatasetStatus
+from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+load_dotenv()
 
-API_IMAGES_INFO = "https://api.pcs-agri.com/images_info"
-API_DOWNLOAD_IMAGE = "http://api.pcs-agri.com/download-image"
-API_USERS = "http://api.pcs-agri.com/users"
-DATASET_STORAGE_PATH = "./datasets"
-API_AUTH_KEY="UVmQ2Y66zBeKGG3A_RAhHm8JJU3JvTqYIzcnUDl0DTQ"
-HEADERS = {
-    "Authorization": "Bearer {API}",
-    "Content-Type": "application/json"
-}
-
-ALLOWED_MODELS = [
-    "melon, pasteque, concombre, courgette, pg_cucurbit, artichaut",
-    "tomate, aubergine, poivron",
-    "poireau",
-    "radis, choux de bruxelles",
-    "haricot",
-    "salad"
-]
+ALLOWED_MODELS = os.getenv("ALLOWED_MODELS")
+API_AUTH_KEY = os.getenv("API_AUTH_KEY")
+API_IMAGES_INFO = os.getenv("API_IMAGES_INFO")
+API_DOWNLOAD_IMAGE = os.getenv("API_DOWNLOAD_IMAGE")
+DATASET_STORAGE_PATH = os.getenv("DATASET_STORAGE_PATH", "datasets")  
     
 
 def create_dataset(db: Session, model: str, start_date: str, end_date: str, user_ids: list) -> Dict[str, Any]:
@@ -211,10 +200,6 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
         "Authorization": f"Bearer {API_AUTH_KEY}"
     }
 
-    # Debug: Print the payload
-    #print("Payload:", payload)
-
-    # Make the API request using POST
     response = requests.post(API_IMAGES_INFO, json=payload, headers=headers, params=params)   # !!!!!
 
     if response.status_code == 200:

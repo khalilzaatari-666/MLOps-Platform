@@ -6,9 +6,14 @@ from app import crud, models, schemas
 from core.dependencies import get_db
 from app.schemas import DatasetStatus, UserResponse, ModelResponse
 from app.models import UserModel, ModelModel
-from core.settings import API_USERS, HEADERS
+from dotenv import load_dotenv
+import os
 
 router = APIRouter()
+load_dotenv()
+API_USERS = os.getenv("API_USERS")
+HEADERS = os.getenv("HEADERS") 
+
 
 @router.post("/datasets/", response_model=schemas.DatasetResponse)
 async def create_dataset(
