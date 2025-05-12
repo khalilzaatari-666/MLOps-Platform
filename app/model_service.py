@@ -11,11 +11,8 @@ from sqlalchemy.orm import Session
 from app.models import DatasetModel, ModelModel
 import shutil
 from sklearn.model_selection import train_test_split
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
-PROJECT_ROOT = os.getenv("PROJECT_ROOT")
+PROJECT_ROOT = Path(__file__).parent.parent
 
 def register_existing_models(db: Session, models_dir: str = "pretrained_models"):
     model_files = Path(models_dir).glob("*.pt")

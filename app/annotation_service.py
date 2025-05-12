@@ -118,7 +118,6 @@ def auto_annotate(dataset_id : str, model_id : str, db: Session) -> str:
 
     print(f"Auto-annotation completed for dataset {dataset.name} using model {model.name}.")
 
-
 async def process_validated_annotations(dataset_id: str, annotations_zip: UploadFile, db: Session) -> str:
     """
     This function extracted the validated annotations and stores them in the labels folder of the dataset
@@ -131,39 +130,52 @@ async def process_validated_annotations(dataset_id: str, annotations_zip: Upload
     Returns:
         Path to the validated annotations folder
     """
-    # Fetch the dataset from the database
-    dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    # Get dataset paths
-    dataset_path = os.path.join("datasets", dataset.name)
-    labels_path = os.path.join(dataset_path, "labels")
+    try:
+        # Fetch the dataset from the database
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Get dataset paths
+        dataset_path = os.path.join("datasets", dataset.name)
+        labels_path = os.path.join(dataset_path, "labels")
 
-    # Ensure dataset exists
-    if not os.path.exists(dataset_path):
-        raise FileNotFoundError(f"Dataset {dataset.name} does not exist.")
+        # Ensure dataset exists
+        if not os.path.exists(dataset_path):
+            raise FileNotFoundError(f"Dataset {dataset.name} does not exist.")
 
-    # Remove old labels folder if it exists
-    if os.path.exists(labels_path):
-        shutil.rmtree(labels_path)
+        # Remove old labels folder if it exists
+        if os.path.exists(labels_path):
+            shutil.rmtree(labels_path)
 
-    os.makedirs(labels_path, exist_ok=True)
+        os.makedirs(labels_path, exist_ok=True)
 
-    # Save the uploaded zip temporarily
-    temp_zip_path = os.path.join(dataset_path, "temp_annotations.zip")
-    with open(temp_zip_path, "wb") as f:
-        content = await annotations_zip.read()
-        f.write(content)
+        # Save the uploaded zip temporarily
+        temp_zip_path = os.path.join(dataset_path, "temp_annotations.zip")
+        with open(temp_zip_path, "wb") as f:
+            content = await annotations_zip.read()
+            f.write(content)
 
-    # Extract ZIP into labels folder
-    with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
-        zip_ref.extractall(labels_path)
+        # Extract ZIP into labels folder
+        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(labels_path)
 
-    # Clean up temporary zip file
-    os.remove(temp_zip_path)
+        # Clean up temporary zip file
+        os.remove(temp_zip_path)
 
-    dataset.status = DatasetStatus.VALIDATED    
-    db.commit()
+        # Update status and commit
+        dataset.status = DatasetStatus.VALIDATED
+        db.add(dataset)  # Explicitly add to session if needed
+        db.commit()
+        db.refresh(dataset)  # Refresh to verify the update
 
-    return f"Annotations successfully extracted to {labels_path}"
+        # Verify the status was updated
+        updated_dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if updated_dataset.status != DatasetStatus.VALIDATED:
+            raise Exception("Failed to update dataset status in database")
+
+        return f"Annotations successfully extracted to {labels_path}"
+
+    except Exception as e:
+        db.rollback()  # Rollback in case of errors
+        raise HTTPException(status_code=500, detail=f"Error processing annotations: {str(e)}")

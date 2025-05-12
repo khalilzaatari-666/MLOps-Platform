@@ -23,7 +23,7 @@ ALLOWED_MODELS = os.getenv("ALLOWED_MODELS")
 API_AUTH_KEY = os.getenv("API_AUTH_KEY")
 API_IMAGES_INFO = os.getenv("API_IMAGES_INFO")
 API_DOWNLOAD_IMAGE = os.getenv("API_DOWNLOAD_IMAGE")
-DATASET_STORAGE_PATH = os.getenv("DATASET_STORAGE_PATH", "datasets")  
+DATASET_STORAGE_PATH = os.getenv("DATASET_STORAGE_PATH", "./datasets")  
     
 
 def create_dataset(db: Session, model: str, start_date: str, end_date: str, user_ids: list) -> Dict[str, Any]:
@@ -38,9 +38,10 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
     images_info = fetch_images(db, model, start_date, end_date, user_ids)
     if not images_info:
         raise HTTPException(
-        status_code=404,
-        detail=f"No images found for model '{model}' and clients '{user_ids}' between {start_date} and {end_date}."
-    )
+            status_code=404,
+            detail=f"No images found for model '{model}' and clients '{user_ids}' between {start_date} and {end_date}."
+        )
+    
     created_at = datetime.now()
     start = datetime.strptime(start_date, "%Y-%m-%d").strftime("%Y%m%d")
     end = datetime.strptime(end_date, "%Y-%m-%d").strftime("%Y%m%d")
@@ -55,7 +56,7 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
             "start_date": start_date,  # Keep as string
             "end_date": end_date,      # Keep as string
             "model": model,
-            "id": -1 , # Use a placeholder ID for empty datasets
+            "id": -1, # Use a placeholder ID for empty datasets
             "created_at": created_at.isoformat(),
             "status": DatasetStatus.RAW
         }
@@ -99,14 +100,14 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         image = db.query(ImageModel).filter(ImageModel.filename == image_name).first()
         if not image:
             image = ImageModel(filename=image_name)
-            db.add(image)
-            db.commit()
-            db.refresh(image)
+            db.add(image)  # Add the image to the session immediately
+            db.commit()    # Commit the session to persist the image
+            db.refresh(image)  # Refresh to get the ID of the newly added image
         new_dataset.images.append(image)
 
-    db.add(new_dataset)
-    db.commit()
-    db.refresh(new_dataset)
+    db.add(new_dataset)  # Add the new dataset to the session
+    db.commit()  # Commit to persist the dataset
+    db.refresh(new_dataset)  # Refresh to get the ID of the newly added dataset
 
     # Create dataset storage directory
     dataset_path = os.path.join(DATASET_STORAGE_PATH, dataset_name)
@@ -157,8 +158,10 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         "start_date": new_dataset.start_date,  # Convert to string
         "end_date": new_dataset.end_date,      # Convert to string
         "model": new_dataset.model,
-        "created_at": new_dataset.created_at.isoformat()
+        "created_at": new_dataset.created_at.isoformat(),
+        "status": new_dataset.status
     }
+
 
 def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_ids: list):
     """
@@ -209,6 +212,9 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
     else:
         print(f"Error fetching images: {response.status_code} {response.text}")
         return []
+
+def list_users(db:Session):
+    return db.query(UserModel).all()
 
 def list_datasets(db: Session):
     """

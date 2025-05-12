@@ -1,17 +1,16 @@
 import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import prometheus_client
-from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.responses import RedirectResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
-from app.database import SessionLocal
+from app.database import SessionLocal, Base, engine
 from app.model_service import register_existing_models
 from routes import annotation, crud, file_handling, training_instances, model_service
 
 # Initialize FastAPI app
 app = FastAPI(title="MLOps Platform API")
+
+logger = logging.getLogger("uvicorn")
 
 # Add CORS middleware
 app.add_middleware(
@@ -22,38 +21,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-instrumentator = Instrumentator(
-    should_group_status_codes=True,
-    should_ignore_untemplated=True,
-)
-
-instrumentator.instrument(app).expose(app, include_in_schema=False)
-
 # Creating tables from models
 @app.on_event("startup")
 async def startup():
     """Create database tables on startup"""
-    from app.database import Base, engine
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
     try:
-        register_existing_models(db=db)
-    finally:
-        db.close()
-    return "Tables created, and pre-trained models registered"
+        # Create all tables
+        Base.metadata.create_all(bind=engine)
+        
+        # Start a database session and register pre-trained models
+        db = SessionLocal()
+        try:
+            register_existing_models(db=db)
+            logger.info("Tables created, and pre-trained models registered.")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
 
 @app.get("/")
 async def root():
     return RedirectResponse(url="/docs")
-
-@app.get("/dashboard")
-async def dashboard():
-    """Redirect to the Grafana dashboard"""
-    return RedirectResponse(url="http://localhost:3000/d/ml-metrics/ml-training-metrics?orgId=1")
-
-@app.get("/metrics")
-async def metrics():
-    return prometheus_client.generate_latest()
 
 @app.get("/health", tags=["monitoring"])
 async def health_check():

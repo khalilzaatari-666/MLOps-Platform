@@ -11,12 +11,14 @@ from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
 from app.tasks import create_training_task, get_training_task, prepare_dataset_task, test_model_task, update_training_task
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
+
+PROJECT_ROOT = Path(__file__).parent.parent
 
 # Endpoint to prepare YOLO dataset splits
 @router.post("/datasets/{dataset_id}/prepare")
@@ -26,10 +28,6 @@ def prepare_dataset(
     split_ratios: dict = None
 ):
     try:
-        # Default split ratios if not provided
-        if split_ratios is None:
-            split_ratios = {'train': 0.7, 'val': 0.3}
-        
         yaml_path = prepare_yolo_dataset_by_id(
             db=db,
             dataset_id=dataset_id,
@@ -197,6 +195,7 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
         if not task:
             raise HTTPException(status_code=404, detail=f"Training task {task_id} not found")
         
+        total_epochs = task.params.get("epochs", 0)
         # Prepare the base response
         response = {
             "status": "success",
@@ -215,13 +214,12 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
         # Handle metrics based on task status
         if task.status == TrainingStatus.IN_PROGRESS:
             short_id = task_id.split('-')[0]
-            results_path = f"runs_{task.dataset_id}/train_{short_id}/results.csv"
+            results_path = f"{PROJECT_ROOT}/runs/runs_{task.dataset_id}/train_{short_id}/results.csv"
             
             try:
                 # Read the CSV with the training metrics
                 results_df = pd.read_csv(results_path)
                 current_epoch = len(results_df)
-                total_epochs = task.params.get("epochs", 0)
                 progress = min(round((current_epoch / total_epochs)*100), 100) if total_epochs > 0 else 0.0
                 
                 # Get the latest metrics (last row of the CSV)
@@ -422,7 +420,7 @@ def get_best_model_info(dataset_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/test-model/{dataset_id}", response_model=Dict, status_code=status.HTTP_200_OK)
-async def test_model(dataset_id: int):
+async def test_model(dataset_id: int, use_gpu: bool):
     """
     Endpoint to test a trained model on a specified dataset
     
@@ -433,7 +431,7 @@ async def test_model(dataset_id: int):
     - Test metrics including precision, recall, mAP scores
     """
     try:
-        test_results = test_model_task(dataset_id)
+        test_results = test_model_task(dataset_id, use_gpu)
         
         return JSONResponse(
             content=test_results,

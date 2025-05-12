@@ -16,10 +16,10 @@ def annotate_images(
 
 # Annotate the images after bounding boxes manual validation
 @router.post("/datasets/{dataset_id}/replace_labels")
-def process_annotations(
+async def process_annotations(
     dataset_id: str, 
     annotations_zip: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    process_validated_annotations(dataset_id, annotations_zip, db)
+    result = await process_validated_annotations(dataset_id, annotations_zip, db)
     return {"message": "Validated annotations processed successfully"}

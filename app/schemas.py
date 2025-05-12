@@ -58,9 +58,9 @@ class DatasetResponse(BaseModel):
     start_date: date  # Use date instead of str
     end_date: date    # Use date instead of str
     model: str
-    created_at: date
-    users_id: List[int] = Field(alias="users")
+    created_at: datetime
     status: str
+
     class Config:
         from_attributes = True
 
@@ -125,7 +125,7 @@ class TrainingStatus(str, enum.Enum):
 class TrainModelRequest(BaseModel):
     dataset_id: int
     params_list: List[Dict[str, Any]]
-    split_ratios: Optional[Dict[str, float]] = {"train": 0.7, "val": 0.3}
+    split_ratios: Optional[Dict[str, float]]
     use_gpu: bool = False
 
 class TrainingResponse(BaseModel):

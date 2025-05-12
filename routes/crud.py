@@ -8,14 +8,20 @@ from app.schemas import DatasetStatus, UserResponse, ModelResponse
 from app.models import UserModel, ModelModel
 from dotenv import load_dotenv
 import os
+import json
+import app.crud
 
 router = APIRouter()
 load_dotenv()
 API_USERS = os.getenv("API_USERS")
-HEADERS = os.getenv("HEADERS") 
+API_AUTH_KEY = os.getenv("API_AUTH_KEY")
 
+HEADERS = {
+    "Authorization": f"Bearer {API_AUTH_KEY}",
+    "Content-Type": "application/json"
+}
 
-@router.post("/datasets/", response_model=schemas.DatasetResponse)
+@router.post("/datasets", response_model=schemas.DatasetResponse)
 async def create_dataset(
     dataset_request: schemas.CreateDatasetRequest, 
     db: Session = Depends(get_db)
@@ -43,7 +49,7 @@ async def get_dataset_by_status(
     return dataset
     
 
-@router.post("/list_users/", response_model=List[schemas.UserResponse])
+@router.post("/list_users", response_model=List[schemas.UserResponse])
 async def list_users(db: Session = Depends(get_db)):
     # Make the API request to fetch users
     try:
@@ -78,7 +84,7 @@ async def list_users(db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@router.get("/users/", response_model=List[UserResponse])
+@router.get("/users", response_model=List[UserResponse])
 async def get_users(db: Session = Depends(get_db)):
     """
     Endpoint to list all users stored in the database.
@@ -104,12 +110,12 @@ async def images(dataset_id: int, db: Session = Depends(get_db)):
     images = crud.list_images(dataset_id=dataset_id, db=db)  # List images for the provided dataset ID
     return images
 
-@router.get("/datasets/", response_model=List[schemas.DatasetResponse])
+@router.get("/datasets", response_model=List[schemas.DatasetResponse])
 async def list_datasets(db: Session = Depends(get_db)):
     datasets = crud.list_datasets(db=db)  # List all datasets from the database
     return datasets
 
-@router.get("/models/", response_model=List[ModelResponse])
+@router.get("/models", response_model=List[ModelResponse])
 def list_models(db: Session = Depends(get_db)):
     models = db.query(ModelModel).all()
     

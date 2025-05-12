@@ -1,10 +1,13 @@
 from datetime import datetime
+import hashlib
+import json
 import logging
 import os
 from pathlib import Path
 import time
 from celery import Celery
 import uuid
+import pymysql
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional
 import torch
@@ -12,27 +15,28 @@ from ultralytics import YOLO
 from app.database import SessionLocal
 from app.model_service import prepare_yolo_dataset_by_id
 from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
-from app.schemas import TrainingStatus
+from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
 from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__) 
+logger = logging.getLogger(__name__)
 
 load_dotenv()
-PROJECT_ROOT = os.getenv("PROJECT_ROOT")
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL")
-CELERY_BACKEND_URL = os.getenv("CELERY_BACKEND_URL")
+CELERY_BROKER = os.getenv("CELERY_BROKER_URL")
+CELERY_BACKEND = os.getenv("CELERY_BACKEND_URL")
 
 app = Celery('tasks',
-    broker=CELERY_BROKER_URL,
-    backend=CELERY_BACKEND_URL)
+    broker=CELERY_BROKER,
+    backend=CELERY_BACKEND)
 
 METRIC_MAPPING = {
     'accuracy': 'metrics/mAP50(B)',
     'precision': 'metrics/precision(B)',
     'recall': 'metrics/recall(B)'
 }
+
+PROJECT_ROOT = Path(__file__).parent.parent
 
 def compute_params_hash(params: Dict[str, Any]) -> str:
     import hashlib
@@ -238,7 +242,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
         logger.info(f"Training on device: {device}")
         start_time = datetime.utcnow()
-        model = YOLO(f"experiments/{task.dataset_id}/yolov8n.pt")
+        model = YOLO(f"{PROJECT_ROOT}/experiments/{task.dataset_id}/yolov8n.pt")
        
         # Set up callback to capture metrics after each epoch
         def on_fit_epoch_end(trainer):
@@ -268,7 +272,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
             box=task.params.get('box', 7.5),
             cls=task.params.get('cls', 0.5),
             dfl=task.params.get('dfl', 1.5),
-            project=f"runs_{task.dataset_id}",
+            project=f"{PROJECT_ROOT}/runs/runs_{task.dataset_id}",
             name=f"train_{task_id[:8]}",
             exist_ok=True,
             device=device,
@@ -315,7 +319,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         advance_queue(db, task.dataset_id)
 
 
-def test_model_task(dataset_id: int):
+def test_model_task(dataset_id: int, use_gpu: bool):
     """Test a trained model on a dataset"""
     db = SessionLocal()
     
@@ -326,6 +330,8 @@ def test_model_task(dataset_id: int):
         
         if last_best_model.dataset_id == dataset_id:
             raise ValueError("Model already trained on this dataset")
+
+        device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
         
         # Prepare dataset paths
         try:
@@ -357,8 +363,8 @@ def test_model_task(dataset_id: int):
         
         # Run validation
         try:
-            logger.info(f"Starting validation on dataset ID: {last_best_model.dataset_id}")
-            results = model.val(data=data_yaml, split='test')
+            logger.info(f"Starting test on dataset ID: {last_best_model.dataset_id}")
+            results = model.val(data=data_yaml, split='test', device=device)
             
             # Record end time
             end_time = datetime.utcnow()
