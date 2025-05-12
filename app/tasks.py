@@ -14,7 +14,7 @@ import torch
 from ultralytics import YOLO
 from app.database import SessionLocal
 from app.model_service import prepare_yolo_dataset_by_id
-from app.models import BestInstanceModel, BestModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
+from app.models import BestInstanceModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
 from dotenv import load_dotenv
 

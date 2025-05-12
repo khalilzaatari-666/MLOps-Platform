@@ -64,11 +64,13 @@ class DatasetModel(Base):
     # One-to-many relationship with training tasks
     test_tasks = relationship("TestTask", back_populates="dataset")
     # One-to-many relationship with training tasks
-    best_model = relationship("BestModel", back_populates="dataset", uselist=False)
+    best_model = relationship("BestInstanceModel", back_populates="dataset", uselist=False)
     # One-to-many relationship with training tasks
     training_tasks = relationship("TrainingTask", back_populates="dataset")
     # One-to-many relationship with training instances
     training_instances = relationship("TrainingInstance", back_populates="dataset")
+    # One-to-many relqtionship with deployed models
+    deployed_models = relationship("DeployedModel", back_populates="dataset")
 
 
 # Model for storing metadata of images
@@ -234,20 +236,19 @@ class TestTask(Base):
             "error": self
         }
 
+class DeployedModel(Base):
+    """Model for tracking deployed models in production"""
+    __tablename__ = "deployed_models"
 
-# Add BestModel table
-class BestModel(Base):
-    __tablename__ = "best_models"
-   
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    dataset_id = Column(Integer, ForeignKey("datasets.id"), unique=True)
-    task_id = Column(String(36), ForeignKey("training_tasks.id"))
-    model_path = Column(String(255), nullable=False)
-    model_info = Column(JSON, nullable=True)
-    score = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-   
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(Integer, ForeignKey("best_instance_models.id"))
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    minio_path = Column(String(100), nullable=False)
+    deployment_date = Column(DateTime, default=datetime.now)
+    score = Column(Float)
+    model_info = Column(JSON)
+    status = Column(String(10), default="active") 
+
     # Relationships
-    dataset = relationship("DatasetModel", back_populates="best_model")
-    training_task = relationship("TrainingTask")
-
+    best_model = relationship("BestInstanceModel" , foreign_keys=[model_id])
+    dataset = relationship("DatasetModel" , foreign_keys=[dataset_id])
