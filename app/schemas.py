@@ -193,3 +193,12 @@ class ModelSelectionConfig(BaseModel):
 
 class TestTaskCreate(BaseModel):
     dataset_id: int
+
+class DeployedModelResponse(BaseModel):
+    id: int
+    dataset_id: int
+    model_id: int
+    path: str
+    deployment_date: datetime
+    score: float
+    status: str

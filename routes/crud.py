@@ -4,7 +4,7 @@ from typing import List
 import requests
 from app import crud, models, schemas
 from core.dependencies import get_db
-from app.schemas import DatasetStatus, UserResponse, ModelResponse
+from app.schemas import DatasetStatus, UserResponse, ModelResponse, ImageResponse, DeployedModelResponse, DatasetResponse
 from app.models import UserModel, ModelModel
 from dotenv import load_dotenv
 import os
@@ -137,3 +137,15 @@ def get_model(model_id: int, db: Session = Depends(get_db)):
         model.class_names = list(model.class_names.values())
     
     return model
+
+@router.get("/deployed_models", response_model=List[DeployedModelResponse])
+def list_deployed_models(db: Session = Depends(get_db)):
+    deployed_models = crud.list_deployed_models(db=db)
+    return deployed_models
+
+@router.get("/deployed_models/{model_id}", response_model=DeployedModelResponse)
+def get_deployed_model(model_id: int, db: Session = Depends(get_db)):
+    deployed_model = crud.get_deployed_model(model_id=model_id, db=db)
+    if not deployed_model:
+        raise HTTPException(status_code=404, detail="Deployed model not found")
+    return deployed_model

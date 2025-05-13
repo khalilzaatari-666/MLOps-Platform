@@ -3,6 +3,7 @@ from minio.error import S3Error
 import os
 from dotenv import load_dotenv
 from datetime import timedelta
+import requests
 
 load_dotenv()
 
@@ -14,7 +15,7 @@ REMOTE_FOLDER = os.getenv("REMOTE_FOLDER")
 
 EXPIRATION = timedelta(hours=1)
 
-def deploy_model_to_minio(source_file: str) -> None:
+def deploy_model_to_minio(source_file: str, destination_file: str) -> None:
     """
     Deploys a model to a MinIO bucket.
 
@@ -40,20 +41,18 @@ def deploy_model_to_minio(source_file: str) -> None:
     else:
         print(f"Bucket {BUCKET_NAME} already exists.")
 
-    remote_file_path = f"{REMOTE_FOLDER}/best.pt"
-
     try: 
-        presigned_url = client.presigned_put_object(BUCKET_NAME, remote_file_path, expires=EXPIRATION)
+        presigned_url = client.presigned_put_object(BUCKET_NAME, destination_file, expires=EXPIRATION)
         print(f"Presigned URL: {presigned_url}")
 
         with open(source_file, "rb") as file:
             response = requests.put(presigned_url, data=file)
             if response.status_code == 200:
-                print(f"Successfully uploaded {source_file} to {remote_file_path}")
+                print(f"Successfully uploaded {source_file} to {destination_file}")
                 return {
                     "status": "success",
                     "source_file": source_file,
-                    "destination_file": remote_file_path
+                    "destination_file": destination_file
                 }
             else:
                 print(f"Failed to upload file: {response.status_code}, {response.text}")

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.model_deployment import deploy_model_to_minio
 from core.dependencies import get_db
 from app.model_service import prepare_yolo_dataset_by_id
-from app.models import BestInstanceModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
+from app.models import BestInstanceModel, DatasetModel, DeployedModel, TestTask, TrainingInstance, TrainingTask
 from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
 from app.tasks import create_training_task, get_training_task, prepare_dataset_task, test_model_task, update_training_task
 from pathlib import Path
@@ -479,18 +479,18 @@ async def deploy_model(db: Session = Depends(get_db)):
         if not model_dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
         
-        # model_seed = model_dataset.model
-        # current_time = datetime.now().strftime("%Y%m%d")
-        # model_name = f"{model_seed}_{current_time}"
-        # model_folder_name = f"models-trackseeds/models-test/model_{model_name}"
-        # destination_path = f"{model_folder_name}/best.pt"
+        model_seed = model_dataset.model
+        current_time = datetime.now().strftime("%Y%m%d")
+        model_name = f"{model_seed}_{current_time}"
+        model_folder_name = f"models-trackseeds/models-test/model_{model_name}"
+        destination_path = f"{model_folder_name}/best.pt"
 
-        deploy_results =  deploy_model_to_minio(model_path)
+        deploy_results =  deploy_model_to_minio(model_path, destination_path)
 
         if deploy_results.get("status") == "success":
             new_deployed_model = DeployedModel(
                 model_id = lastest_best_model.id,
-                dataset_id = latest_best_model.dataset_id,
+                dataset_id = lastest_best_model.dataset_id,
                 minio_path = deploy_results.get("destination_file"),
                 deployment_date = datetime.now(),
                 score = lastest_best_model.score,

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
 import requests
-from app.models import DatasetModel, ImageModel, UserModel, dataset_images
+from app.models import DatasetModel, ImageModel, UserModel, dataset_images, DeployedModel
 from app.schemas import DatasetStatus
 from dotenv import load_dotenv
 
@@ -339,3 +339,39 @@ def get_dataset_image(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+    
+def list_deployed_models(db: Session):
+    """
+    List all deployed models from the database.
+    """
+    deployed_models = db.query(DeployedModel).all()
+    return [
+        {
+            "id": model.id,
+            "dataset_id": model.dataset_id,
+            "model_id": model.model_id,
+            "path": model.minio_path,
+            "deployment_date": model.deployment_date.isoformat(),
+            "score": model.score,
+            "status": model.status,
+        }
+        for model in deployed_models
+    ]
+
+def get_deployed_model(db: Session, model_id: int):
+    """
+    Get a specific deployed model by its ID.
+    """
+    deployed_model = db.query(DeployedModel).filter(DeployedModel.id == model_id).first()
+    if not deployed_model:
+        raise HTTPException(status_code=404, detail="Deployed model not found")
+    
+    return {
+        "id": deployed_model.id,
+        "dataset_id": deployed_model.dataset_id,
+        "model_id": deployed_model.model_id,
+        "path": deployed_model.minio_path,
+        "deployment_date": deployed_model.deployment_date.isoformat(),
+        "score": deployed_model.score,
+        "status": deployed_model.status,
+    }
