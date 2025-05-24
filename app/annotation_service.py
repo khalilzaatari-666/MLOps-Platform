@@ -6,12 +6,12 @@ from typing import OrderedDict
 import zipfile
 import cv2
 from fastapi import HTTPException, UploadFile
-from requests import Session
+from sqlalchemy.orm import Session
 from ultralytics import YOLO
 from app.models import BoundingBox, DatasetModel, ImageModel, ModelModel
 from app.schemas import DatasetStatus
 
-def auto_annotate(dataset_id : str, model_id : str, db: Session) -> str:
+def auto_annotate(dataset_id : str, model_id : str, db: Session) -> None:
     """
     This function performs auto-annotation on the dataset using the specified YOLO model.
 
@@ -29,7 +29,7 @@ def auto_annotate(dataset_id : str, model_id : str, db: Session) -> str:
         raise HTTPException(status_code=404, detail="Dataset or Model not found")
     
     #Get dataset path
-    dataset_path = os.path.join("datasets" , dataset.name)
+    dataset_path = os.path.join("datasets", str(dataset.name))
     raw_images = os.path.join(dataset_path , "raw")
 
     # Load the YOLO model
@@ -137,7 +137,7 @@ async def process_validated_annotations(dataset_id: str, annotations_zip: Upload
             raise HTTPException(status_code=404, detail="Dataset not found")
         
         # Get dataset paths
-        dataset_path = os.path.join("datasets", dataset.name)
+        dataset_path = os.path.join("datasets", str(dataset.name))
         labels_path = os.path.join(dataset_path, "labels")
 
         # Ensure dataset exists

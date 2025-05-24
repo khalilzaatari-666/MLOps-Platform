@@ -99,7 +99,7 @@ def update_training_task(db: Session, task_id: str, updates: Dict[str, Any]):
         setattr(task, key, value)
     
     if 'status' in updates and updates['status'] == TrainingStatus.COMPLETED:
-        task.end_date = datetime.utcnow()
+        setattr(task, 'end_date', datetime.utcnow())
     
     db.commit()
     db.refresh(task)
@@ -120,7 +120,7 @@ def advance_queue(db: Session, dataset_id: Optional[int] = None):
     """Move the next task in the queue to running status"""
     next_task = get_next_task_in_queue(db, dataset_id)
     if next_task:
-        update_training_task(db, next_task.id, {'status': TrainingStatus.PENDING})
+        update_training_task(db, str(next_task.id), {'status': TrainingStatus.PENDING})
         prepare_dataset_task.delay(next_task.dataset_id, next_task.id, next_task.split_ratios or {"train": 0.7, "val": 0.2, "test": 0.1})
         return next_task
     return None
@@ -143,7 +143,7 @@ def get_test_task_status(test_task_id: str):
                 'model_path': test_task.model_path,
                 'status': test_task.status,
                 'start_date': test_task.start_date.isoformat(),
-                'end_date': test_task.end_date.isoformat() if test_task.end_date else None,
+                'end_date': test_task.end_date.isoformat() if test_task.end_date is not None else None,
                 'results': test_task.results,
                 'error': test_task.error
             }
@@ -158,7 +158,7 @@ def get_dataset_yaml_path(dataset_id: int) -> str:
     dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
     if not dataset:
         raise ValueError(f"Dataset {dataset_id} not found")
-    yaml_path = os.path.join(PROJECT_ROOT, "datasets", dataset.name, "yolo_splits", "data.yaml")
+    yaml_path = os.path.join(PROJECT_ROOT, "datasets", dataset.name, "yolo_splits", "data.yaml") # type: ignore
     return yaml_path
 
 @app.task(bind=True, name="prepare_dataset")
@@ -206,12 +206,6 @@ def prepare_dataset_task(self, dataset_id: int, task_id: str, split_ratios: Dict
             'dataset_id': dataset_id,
             'task_id': task_id
         }
-    except Exception as e:
-        logger.error(f"Dataset preparation failed: {str(e)}", exc_info=True)
-        update_training_task(db, task_id, {
-            'status': TrainingStatus.FAILED,
-            'error': f"Dataset preparation failed: {str(e)}"
-        })
     except SoftTimeLimitExceeded:
         logger.error(f"Dataset preparation timed out after 5 minutes")
         update_training_task(db, task_id, {
@@ -220,6 +214,12 @@ def prepare_dataset_task(self, dataset_id: int, task_id: str, split_ratios: Dict
         })
         advance_queue(db, dataset_id)
         raise
+    except Exception as e:
+        logger.error(f"Dataset preparation failed: {str(e)}", exc_info=True)
+        update_training_task(db, task_id, {
+            'status': TrainingStatus.FAILED,
+            'error': f"Dataset preparation failed: {str(e)}"
+        })
     finally:
         db.close()
 
@@ -230,7 +230,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
    
     try:
         task = get_training_task(db, task_id)
-        if task.status != TrainingStatus.PREPARED:
+        if task.status.is_(TrainingStatus.PREPARED) is False:
             raise ValueError("Dataset not prepared for task")
        
         logger.info(f"Starting training for task {task_id}")
@@ -284,24 +284,24 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
        
         update_training_task(db, task_id, {
             'status': TrainingStatus.COMPLETED,
-            'results': results.results_dict,
-            'model_path': results.save_dir,
+            'results': results.results_dict if results else {},
+            'model_path': results.save_dir if results else None,
         })
 
         final_metrics = {
-            'metrics/mAP50(B)': results.results_dict.get('metrics/mAP50', 0),
-            'metrics/mAP50-95(B)': results.results_dict.get('metrics/mAP50-95', 0),
-            'metrics/precision(B)': results.results_dict.get('metrics/precision', 0),
-            'metrics/recall(B)': results.results_dict.get('metrics/recall', 0),
-            'inference_speed': results.speed.get('inference', 0)  # ms per image
+            'metrics/mAP50(B)': results.results_dict.get('metrics/mAP50', 0) if results and hasattr(results, 'results_dict') else 0,
+            'metrics/mAP50-95(B)': results.results_dict.get('metrics/mAP50-95', 0) if results and hasattr(results, 'results_dict') else 0,
+            'metrics/precision(B)': results.results_dict.get('metrics/precision', 0) if results and hasattr(results, 'results_dict') else 0,
+            'metrics/recall(B)': results.results_dict.get('metrics/recall', 0) if results and hasattr(results, 'results_dict') else 0,
+            'inference_speed': results.speed.get('inference', 0) if results and hasattr(results, 'speed') else 0  # ms per image
         }
        
         return {
             'status': 'SUCCESS',
             'task_id': task_id,
             'dataset_id': dataset_id,
-            'results': results.results_dict,
-            'model_path': str(results.save_dir),
+            'results': final_metrics,
+            'model_path': str(results.save_dir) if results else None,
             "duration_seconds": duration_seconds
         }
     except Exception as e:
@@ -328,7 +328,7 @@ def test_model_task(dataset_id: int, use_gpu: bool):
         if not last_best_model:
             raise ValueError("No available model to test")
         
-        if last_best_model.dataset_id == dataset_id:
+        if last_best_model.dataset_id.is_(dataset_id):
             raise ValueError("Model already trained on this dataset")
 
         device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'

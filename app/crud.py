@@ -32,8 +32,11 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
     associates them with the dataset, and then downloads the images to a local directory.
     """
     # Validate model before making the API request
-    if model not in ALLOWED_MODELS:
-        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(ALLOWED_MODELS)}.")
+    if not ALLOWED_MODELS:
+        raise HTTPException(status_code=500, detail="ALLOWED_MODELS environment variable is not set.")
+    allowed_models_list = [m.strip() for m in ALLOWED_MODELS.split(",")]
+    if model not in allowed_models_list:
+        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(allowed_models_list)}.")
 
     images_info = fetch_images(db, model, start_date, end_date, user_ids)
     if not images_info:
@@ -141,6 +144,10 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         # Construct the image URL
         headers = {"Authorization": f"Bearer {API_AUTH_KEY}"}
 
+        # Ensure API_DOWNLOAD_IMAGE is set
+        if not API_DOWNLOAD_IMAGE:
+            raise HTTPException(status_code=500, detail="API_DOWNLOAD_IMAGE environment variable is not set.")
+
         # Download the image
         response = requests.get(API_DOWNLOAD_IMAGE, params={"image_name": image_name}, headers=headers, stream=True)
         image_path = os.path.join(raw_images_path, image_name)
@@ -168,8 +175,11 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
     Fetches images from an external API based on the given parameters.
     """
     # Validate model before making the API request
-    if model not in ALLOWED_MODELS:
-        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(ALLOWED_MODELS)}.")
+    if not ALLOWED_MODELS:
+        raise HTTPException(status_code=500, detail="ALLOWED_MODELS environment variable is not set.")
+    allowed_models_list = [m.strip() for m in ALLOWED_MODELS.split(",")]
+    if model not in allowed_models_list:
+        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(allowed_models_list)}.")
     
     # Fetch users from the database based on user_ids (if passed)
     if user_ids:
@@ -202,6 +212,9 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
         "accept": "application/json",
         "Authorization": f"Bearer {API_AUTH_KEY}"
     }
+
+    if not API_IMAGES_INFO:
+        raise HTTPException(status_code=500, detail="API_IMAGES_INFO environment variable is not set.")
 
     response = requests.post(API_IMAGES_INFO, json=payload, headers=headers, params=params)   # !!!!!
 
@@ -328,7 +341,7 @@ def get_dataset_image(
         }
         
         return FileResponse(
-            image_path,
+            str(image_path),
             media_type=media_types.get(ext, 'image/jpeg'),
             filename=image_path.name
         )

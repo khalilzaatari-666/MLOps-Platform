@@ -93,6 +93,7 @@ class ModelModel(Base):
     
     id = Column(Integer, primary_key=True)
     name = Column(String(255), unique=True)
+    group = Column(String(255), nullable=True)  # Optional group for model categorization
     model_type = Column(String(50))
     model_path = Column(String(512))
     input_size = Column(Integer)
@@ -185,8 +186,8 @@ class TrainingTask(Base):
             "results": self.results,
             "model_path": self.model_path,
             "queue_position": self.queue_position,
-            "start_date": self.start_date.isoformat() if self.start_date else None,
-            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "start_date": self.start_date.isoformat() if getattr(self, "start_date", None) else None,
+            "end_date": self.end_date.isoformat() if getattr(self, "end_date", None) else None,
             "error": self.error
         }
     
@@ -231,9 +232,9 @@ class TestTask(Base):
             "model_path": self.model_path,
             "status": self.status,
             "results": self.results,
-            "start_date": self.start_date.isoformat() if self.start_date else None,
-            "end_date": self.end_date.isoformat() if self.end_date else None,
-            "error": self
+            "start_date": self.start_date.isoformat() if getattr(self, "start_date", None) else None,
+            "end_date": self.end_date.isoformat() if getattr(self, "end_date", None) else None,
+            "error": self.error
         }
 
 class DeployedModel(Base):

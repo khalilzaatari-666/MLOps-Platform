@@ -1,9 +1,10 @@
 from pydantic import ConfigDict
-import enum
+from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
 from typing import Any, Dict, List, Literal, Optional
 from ultralytics import YOLO
+import enum
 
 METRIC_MAPPING = {
     'accuracy': 'metrics/mAP50(B)',
@@ -42,15 +43,6 @@ class ImageResponse(ImageBase):
     class Config:
         from_attributes = True
 
-# Pydantic schema for Dataset
-class DatasetBase(BaseModel):
-    name: str
-    start_date: str
-    end_date: str
-    model: str
-    created_at: datetime
-    users: List[int]  # List of user IDs
-    images: List[int]  # List of image IDs
 
 class DatasetResponse(BaseModel):
     id: int
@@ -64,10 +56,22 @@ class DatasetResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class DatasetStatus(str, enum.Enum):
+class DatasetStatus(enum.Enum):
     RAW = "RAW"  
     AUTO_ANNOTATED = "AUTO_ANNOTATED"
     VALIDATED = "VALIDATED"
+    AUGMENTED = "AUGMENTED"
+
+# Pydantic schema for Dataset
+class DatasetBase(BaseModel):
+    name: str
+    start_date: str
+    end_date: str
+    model: str
+    created_at: datetime
+    users: List[int]  # List of user IDs
+    images: List[int]  # List of image IDs
+    status: DatasetStatus
 
 class CreateDatasetRequest(BaseModel):
     model: str = Field(..., description="The model to use for the dataset")
@@ -104,7 +108,7 @@ class ModelResponse(BaseModel):
 class HyperparameterConfig(BaseModel):
     lr0: float = 0.01
     lrf: float = 0.1
-    epochs: int = 100,
+    epochs: int = 100
     momentum: float = 0.937
     weight_decay: float = 0.0005
     warmup_epochs: float = 3.0
@@ -165,19 +169,6 @@ class TrainingTaskSchema(BaseModel):
         }
     )
 
-class HyperparameterConfig(BaseModel):
-    epochs: int = Field(100, ge=10, description="Must be ≥10")
-    batch_size: int = Field(16, ge=1, description="Batch size for training")
-    lr0: float = Field(0.01, gt=0, description="Initial learning rate")
-    lrf: float = Field(0.1, gt=0, description="Final learning rate factor")
-    momentum: float = Field(0.937, ge=0, le=1, description="SGD momentum/Adam beta1")
-    weight_decay: float = Field(0.0005, ge=0, description="Optimizer weight decay")
-    warmup_epochs: float = Field(3.0, ge=0, description="Warmup epochs")
-    warmup_momentum: float = Field(0.8, ge=0, le=1, description="Warmup momentum")
-    box: float = Field(7.5, ge=0, description="Box loss gain")
-    cls: float = Field(0.5, ge=0, description="Class loss gain")
-    dfl: float = Field(1.5, ge=0, description="DFL loss gain")
-
 class TrainingTaskCreate(BaseModel):
     dataset_id: int
     hyperparams: HyperparameterConfig
@@ -202,3 +193,13 @@ class DeployedModelResponse(BaseModel):
     deployment_date: datetime
     score: float
     status: str
+
+class TransformerType(str, Enum):
+    VERTICAL_FLIP = "vertical_flip",
+    HORIZONTAL_FLIP = "horizontal_flip",
+    TRANSPOSE = "transpose",
+    CENTER_CROP = "center_crop",
+
+class AugmentationRequest(BaseModel):
+    dataset_id: int
+    transformer: TransformerType

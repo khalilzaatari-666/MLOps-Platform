@@ -5,7 +5,7 @@ from starlette.responses import RedirectResponse
 from starlette.responses import Response
 from app.database import SessionLocal, Base, engine
 from app.model_service import register_existing_models
-from routes import annotation, crud, file_handling, training_instances, model_service
+from routes import annotation, crud, file_handling, training_instances, model_service, data_augmentation, pre_trained_models
 
 # Initialize FastAPI app
 app = FastAPI(title="MLOps Platform API")
@@ -53,5 +53,6 @@ app.include_router(crud.router, prefix="", tags=["crud"])
 app.include_router(file_handling.router, prefix="", tags=["file_handling"])
 app.include_router(model_service.router, prefix="", tags=["model"])
 app.include_router(training_instances.router, prefix="", tags=["training-instances"])
-
+app.include_router(data_augmentation.router, prefix="", tags=["data_augmentation"])
+app.include_router(pre_trained_models.router, prefix="", tags=["pre-trained-models"])
 
