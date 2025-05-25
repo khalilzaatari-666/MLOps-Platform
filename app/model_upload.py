@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from datetime import datetime
 from sqlalchemy.orm import Session
 from ultralytics import YOLO
@@ -14,7 +14,7 @@ MODELS_DIR = "pretrained_models"
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
 
-upload_progress: Dict[str, float] = {}
+upload_progress: Dict[str, Dict[str, Union[str, int, float]]] = {}
 
 class UploadProgress:
     def __init__(self, upload_id: str, filename: str, total_size: int) -> None:
@@ -64,7 +64,13 @@ def extract_model_metadata(file_path: str, model_name: str) -> dict:
         device = str(model.device) if hasattr(model, 'device') else 'cpu'
         
         # Extract input size
-        input_size = model.model.args.get("imgsz", 640) if hasattr(model, 'model') and hasattr(model.model, 'args') else 640
+        try:
+            if hasattr(model, 'model') and hasattr(model.model, 'args') and isinstance(model.model.args, dict):
+                input_size = model.model.args.get("imgsz", 640)
+            else:
+                input_size = 640
+        except AttributeError:
+            input_size = 640
         
         return {
             'model_type': model_type,

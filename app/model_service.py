@@ -38,7 +38,7 @@ def register_existing_models(db: Session, models_dir: str = "pretrained_models")
             name=model_name,
             model_type=model_type,
             model_path=str(model_path),
-            input_size=model.model.args.get("imgsz", 640),
+            input_size=model.model.args.get("imgsz", 640), # type: ignore
             class_names=class_names,
             device=device,  # Add this line
             last_used=datetime.now()
@@ -50,7 +50,7 @@ def register_existing_models(db: Session, models_dir: str = "pretrained_models")
 def prepare_yolo_dataset_by_id(
     db: Session,
     dataset_id: int,
-    split_ratios: dict = None,
+    split_ratios: Optional[dict] = None,
     random_state: int = 42,
     overwrite=True
 ) -> str:
@@ -89,18 +89,18 @@ def prepare_yolo_dataset_by_id(
     # Construct dataset path from name
     # All paths are relative to PROJECT_ROOT
     dataset_path = PROJECT_ROOT / "datasets" / dataset.name
-    if not os.path.exists(dataset_path):
+    if not os.path.exists(str(dataset_path)):
         raise ValueError(f"Dataset folder not found at: {dataset_path}")
     
     yolo_dir = dataset_path / "yolo_splits"
 
     # Check if raw folder exists
-    raw_folder = os.path.join(dataset_path, "raw")
+    raw_folder = os.path.join(str(dataset_path), "raw")
     if not os.path.exists(raw_folder):
         raise ValueError(f"Raw folder not found at: {raw_folder}")
 
     # Create output directory inside the dataset folder
-    output_dir = os.path.join(dataset_path, "yolo_splits")
+    output_dir = os.path.join(str(dataset_path), "yolo_splits")
     if os.path.exists(output_dir):
         if overwrite:
             shutil.rmtree(output_dir)
@@ -149,7 +149,7 @@ def prepare_yolo_dataset_by_id(
         stem_to_split[stem] = 'test'
 
     # Copy files from raw to appropriate splits
-    labels_dir = os.path.join(dataset_path, "labels")
+    labels_dir = os.path.join(str(dataset_path), "labels")
     has_labels = os.path.exists(labels_dir)
     
     for img_file in image_files:
@@ -171,7 +171,7 @@ def prepare_yolo_dataset_by_id(
 
     # Create data.yaml file with the requested structure
     # Create output directory
-    output_dir = os.path.join(dataset_path, "yolo_splits")
+    output_dir = os.path.join(str(dataset_path), "yolo_splits")
     os.makedirs(output_dir, exist_ok=True)
 
     # Create data.yaml with correct paths
@@ -188,10 +188,10 @@ def prepare_yolo_dataset_by_id(
         """
 
     yaml_path = yolo_dir / "data.yaml"
-    with open(yaml_path, 'w') as f:
+    with open(str(yaml_path), 'w') as f:
         f.write(yaml_content)
 
     # Return path to the data.yaml file
-    return yaml_path
+    return str(yaml_path)
 
 

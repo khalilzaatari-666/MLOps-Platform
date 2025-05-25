@@ -146,6 +146,7 @@ class TrainingStatusResponse(BaseModel):
     subtasks: Dict[str, Any] = {}
     best_model: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    message: Optional[str] = None
 
 class TrainingTaskSchema(BaseModel):
     id: str

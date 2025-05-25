@@ -44,7 +44,7 @@ async def get_dataset_by_status(
         raise HTTPException(status_code=400, detail="Invalid status")
     dataset = crud.get_dataset_by_status(
         db=db,
-        status=status
+        status=DatasetStatus(status)
     )
     return dataset
     
@@ -52,6 +52,8 @@ async def get_dataset_by_status(
 @router.post("/list_users", response_model=List[schemas.UserResponse])
 async def list_users(db: Session = Depends(get_db)):
     # Make the API request to fetch users
+    if not API_USERS:
+        raise HTTPException(status_code=500, detail="API_USERS environment variable is not set")
     try:
         response = requests.post(API_USERS, headers=HEADERS)
         response.raise_for_status()  # Raise an exception for bad status codes
@@ -120,11 +122,20 @@ def list_models(db: Session = Depends(get_db)):
     models = db.query(ModelModel).all()
     
     # Ensure each model's class_names is properly formatted
+    formatted_models = []
     for model in models:
         if isinstance(model.class_names, dict):
-            model.class_names = list(model.class_names.values())
+            model_dict = {
+                'id': model.id,
+                'name': model.name,
+                'class_names': list(model.class_names.values()),
+                'created_at': model.created_at
+            }
+            formatted_models.append(model_dict)
+        else:
+            formatted_models.append(model)
     
-    return models
+    return formatted_models
 
 @router.get("/models/{model_id}", response_model=ModelResponse)
 def get_model(model_id: int, db: Session = Depends(get_db)):
@@ -132,11 +143,15 @@ def get_model(model_id: int, db: Session = Depends(get_db)):
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
     
-    # Ensure class_names is properly formatted
-    if isinstance(model.class_names, dict):
-        model.class_names = list(model.class_names.values())
+    # Create a new dictionary with formatted data
+    model_data = {
+        'id': model.id,
+        'name': model.name,
+        'class_names': list(model.class_names.values()) if isinstance(model.class_names, dict) else model.class_names,
+        'created_at': model.created_at
+    }
     
-    return model
+    return model_data
 
 @router.get("/deployed_models", response_model=List[DeployedModelResponse])
 def list_deployed_models(db: Session = Depends(get_db)):

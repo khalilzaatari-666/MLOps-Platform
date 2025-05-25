@@ -316,7 +316,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         db.close()
-        advance_queue(db, task.dataset_id)
+        advance_queue(db, task.dataset_id) # type: ignore
 
 
 def test_model_task(dataset_id: int, use_gpu: bool):
@@ -347,7 +347,7 @@ def test_model_task(dataset_id: int, use_gpu: bool):
             raise RuntimeError(f"Dataset preparation failed: {str(e)}")
 
         # Validate model path
-        model_file = Path(last_best_model.model_path) / "weights" / "best.pt"
+        model_file = Path(last_best_model.model_path) / "weights" / "best.pt"  # type: ignore
         if not model_file.exists():
             raise FileNotFoundError(f"Model weights not found at: {model_file}")
         

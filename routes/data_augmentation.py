@@ -20,12 +20,12 @@ async def augment_dataset(request: AugmentationRequest, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     # Verify if dataset is augmented
-    if dataset.status == DatasetStatus.AUGMENTED:
+    if dataset.status.is_(DatasetStatus.AUGMENTED):
         raise HTTPException(status_code=404, detail="Dataset already augmented.")
 
 
     # Verify if dataset has labels
-    if dataset.status != DatasetStatus.AUTO_ANNOTATED and dataset.status != DatasetStatus.VALIDATED:
+    if not (dataset.status.is_(DatasetStatus.AUTO_ANNOTATED) or dataset.status.is_(DatasetStatus.VALIDATED)):
         raise HTTPException(
             status_code=400,
             detail="Dataset must be AUTO_ANNOTATED or VALIDATED"
@@ -33,7 +33,7 @@ async def augment_dataset(request: AugmentationRequest, db: Session = Depends(ge
 
     try:
         result = apply_augmentation(
-            dataset_id=request.dataset_id,
+            dataset_id=str(request.dataset_id),
             transformer_type=request.transformer,
             db=db
         )

@@ -26,7 +26,7 @@ async def upload_model(
     
     upload_id = str(uuid.uuid4())
     
-    if not file.filename.endswith('.pt'):
+    if not file.filename or not file.filename.endswith('.pt'):
         raise HTTPException(status_code=400, detail="Only .pt files are allowed")
     
     model_name = Path(file.filename).stem
@@ -67,7 +67,7 @@ async def list_models(db: Session = Depends(get_db)):
         models_data = []
         for model in models:
             # Check if file still exists
-            file_exists = os.path.exists(model.model_path) if model.model_path else False
+            file_exists = os.path.exists(model.model_path) if model.model_path else False #type: ignore
             
             models_data.append({
                 "id": model.id,
@@ -79,9 +79,9 @@ async def list_models(db: Session = Depends(get_db)):
                 "class_names": model.class_names,
                 "device": model.device,
                 "is_active": model.is_active,
-                "last_used": model.last_used.isoformat() if model.last_used else None,
+                "last_used": model.last_used.isoformat() if model.last_used is not None else None,
                 "file_exists": file_exists,
-                "file_size": os.path.getsize(model.model_path) if file_exists else 0
+                "file_size": os.path.getsize(model.model_path) if file_exists else 0  #type: ignore
             })
         
         return {"models": models_data}
@@ -97,7 +97,7 @@ async def delete_model(model_id: int, db: Session = Depends(get_db)):
         if not model:
             raise HTTPException(status_code=404, detail="Model not found")
         
-        model.is_active = False  # Mark as inactive
+        setattr(model, "is_active", False)  # Mark as inactive
         db.commit()
         
         return {"message": f"Model {model.name} deactivated successfully"}
@@ -120,9 +120,9 @@ async def update_model(
         
         # Update fields if provided
         if group is not None:
-            model.group = group
+            model.group = group     #type: ignore
         if device is not None:
-            model.device = device
+            model.device = device   #type: ignore
         
         db.commit()
         return {"message": f"Model {model.name} updated successfully"}

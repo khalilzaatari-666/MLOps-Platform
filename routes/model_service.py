@@ -1,7 +1,7 @@
 from datetime import datetime
 import logging
-from typing import Dict
-from fastapi import APIRouter, Depends, HTTPException, logger, status
+from typing import Dict, Optional
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 def prepare_dataset(
     dataset_id: int, 
     db: Session = Depends(get_db),
-    split_ratios: dict = None
+    split_ratios: Optional[dict] = None
 ):
     try:
         yaml_path = prepare_yolo_dataset_by_id(
@@ -75,7 +75,7 @@ def start_training(
             task = create_training_task(
                 db=db,
                 dataset_id=request.dataset_id,
-                training_instance_id=training_instance.id,
+                instance_id=training_instance.id,      #type: ignore
                 params=params,
                 queue_position=i
             )
@@ -91,14 +91,13 @@ def start_training(
                 task_id=first_task.id,
                 split_ratios=request.split_ratios
             )
-            update_training_task(db, first_task.id, {"status": TrainingStatus.PENDING})
+            update_training_task(db, str(first_task.id), {"status": TrainingStatus.PENDING})
             logger.info(f"Started first training task {first_task.id} for dataset {request.dataset_id}")
 
         return TrainingResponse(
             task_ids=task_ids,
             status="success",
-            message=f"Successfully queued {len(task_ids)} training tasks",
-            training_instance_id=training_instance.id
+            message=f"Successfully queued {len(task_ids)} training tasks"
         )
         
     except Exception as e:
@@ -166,10 +165,10 @@ def get_training_status(dataset_id: int, db: Session = Depends(get_db)):
                 "status": task.status,
                 "params": task.params,
                 "results": task.results if task.status == TrainingStatus.COMPLETED else None,
-                "error": task.error if task.status == TrainingStatus.FAILED else None,
+                "error": task.error if task.status == str(TrainingStatus.FAILED) else None,
                 "queue_position": task.queue_position,
                 "progress": task.progress if hasattr(task, 'progress') else 0.0,  # Individual task progress
-                "start_date": task.start_date.isoformat() if task.start_date else None,
+                "start_date": task.start_date.isoformat() if getattr(task, "start_date", None) else None,
                 "end_date": task.end_date.isoformat() if task.end_date else None
             } for task in tasks
         }
@@ -204,15 +203,15 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
                 "dataset_id": task.dataset_id,
                 "status": task.status,
                 "params": task.params,
-                "start_date": task.start_date.isoformat() if task.start_date else None,
-                "end_date": task.end_date.isoformat() if task.end_date else None,
-                "error": task.error if task.status == TrainingStatus.FAILED else None,
+                "start_date": task.start_date.isoformat() if getattr(task, "start_date", None) else None,
+                "end_date": task.end_date.isoformat() if getattr(task, "end_date", None) else None,
+                "error": task.error if str(task.status) == str(TrainingStatus.FAILED) else None,
                 "queue_position": task.queue_position
             }
         }
         
         # Handle metrics based on task status
-        if task.status == TrainingStatus.IN_PROGRESS:
+        if str(task.status) == str(TrainingStatus.IN_PROGRESS):
             short_id = task_id.split('-')[0]
             results_path = f"{PROJECT_ROOT}/runs/runs_{task.dataset_id}/train_{short_id}/results.csv"
             
@@ -263,13 +262,13 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
                 response["task"]["current_epoch"] = 0
                 response["task"]["total_epochs"] = total_epochs
         
-        elif task.status == TrainingStatus.COMPLETED:
+        elif str(task.status) == str(TrainingStatus.COMPLETED):
             # For completed tasks, use the stored results
             response["task"]["progress"] = 100.0
             response["task"]["results"] = task.results
             
             # If results contains metrics information, extract it
-            if task.results and isinstance(task.results, dict):
+            if task.results is not None and isinstance(task.results, dict):
                 response["task"]["current_metrics"] = {
                     "metrics/mAP50(B)": task.results.get("metrics/mAP50", 0),
                     "metrics/mAP50-95(B)": task.results.get("metrics/mAP50-95", 0),
@@ -344,13 +343,14 @@ def select_best_model(
             existing_best.task_id = best_task.id
             existing_best.model_path = best_task.model_path
             existing_best.score = score
-            existing_best.model_info = {
+            existing_best.model_info = {    #type: ignore
                 'params': best_task.params,
                 'params_hash': best_task.params_hash,
                 'metric': config.selection_metric,
                 'score': score
             }
-            existing_best.updated_at = datetime.utcnow()
+            # Set the value of the mapped attribute, not the Column object
+            setattr(existing_best, "updated_at", datetime.utcnow())
             model_result = existing_best
         else:
             best_instance_model = BestInstanceModel(
@@ -375,8 +375,8 @@ def select_best_model(
             TrainingTask.id == best_task.id
         ).first()
 
-        task_params = training_task.params
-        
+        task_params = training_task.params if training_task is not None else {}
+
         return {
             'status': 'success',
             'best_model': {
@@ -487,7 +487,7 @@ async def deploy_model(db: Session = Depends(get_db)):
 
         deploy_results =  deploy_model_to_minio(model_path, destination_path)
 
-        if deploy_results.get("status") == "success":
+        if deploy_results is not None and deploy_results.get("status") == "success":
             new_deployed_model = DeployedModel(
                 model_id = lastest_best_model.id,
                 dataset_id = lastest_best_model.dataset_id,
@@ -498,16 +498,21 @@ async def deploy_model(db: Session = Depends(get_db)):
                 status = "active"
             )
         
-        db.add(new_deployed_model)
-        db.commit()
-        db.refresh(new_deployed_model)
+            db.add(new_deployed_model)
+            db.commit()
+            db.refresh(new_deployed_model)
 
-        deploy_results["deployed_model_id"] = new_deployed_model.id
+            deploy_results["deployed_model_id"] = new_deployed_model.id
 
-        return JSONResponse(
-            content=deploy_results,
-            status_code=status.HTTP_200_OK
-        )
+            return JSONResponse(
+                content=deploy_results,
+                status_code=status.HTTP_200_OK
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error while deploying the model: deploy_model_to_minio returned None or failed"
+            )
     
     except Exception as e:
         logger.error(f"Failed to deploy model: {str(e)}")

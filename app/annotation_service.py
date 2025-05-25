@@ -11,7 +11,7 @@ from ultralytics import YOLO
 from app.models import BoundingBox, DatasetModel, ImageModel, ModelModel
 from app.schemas import DatasetStatus
 
-def auto_annotate(dataset_id : str, model_id : str, db: Session) -> None:
+def auto_annotate(dataset_id : int, model_id : int, db: Session) -> None:
     """
     This function performs auto-annotation on the dataset using the specified YOLO model.
 
@@ -34,8 +34,8 @@ def auto_annotate(dataset_id : str, model_id : str, db: Session) -> None:
 
     # Load the YOLO model
     try:
-        yolo_model = YOLO(model.model_path)
-        model.last_used = datetime.utcnow()  # Update last used timestamp
+        yolo_model = YOLO(str(model.model_path))
+        model.last_used = datetime.utcnow()  # type: ignore # Update last used timestamp
         db.commit()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load model: {str(e)}")
@@ -82,30 +82,32 @@ def auto_annotate(dataset_id : str, model_id : str, db: Session) -> None:
         # Save labels and track classes
         label_path = os.path.join(labels_output, os.path.splitext(image_file)[0] + '.txt')
         with open(label_path, 'w') as f:
-            for box in results[0].boxes:
-                cls_id = int(box.cls)
-                cls_name = yolo_model.names[cls_id]
-                unique_classes.add(cls_name)
+            if results[0].boxes is not None:
+                for box in results[0].boxes:
+                    cls_id = int(box.cls)
+                    cls_name = yolo_model.names[cls_id]
+                    unique_classes.add(cls_name)
                 
-                # Write YOLO-format label (class_id x_center y_center width height)
-                xywhn = box.xywhn[0].tolist()
-                f.write(f"{cls_id} {' '.join(f'{x:.6f}' for x in xywhn)}\n")
+                    # Write YOLO-format label (class_id x_center y_center width height)
+                    xywhn = box.xywhn[0].tolist()
+                    f.write(f"{cls_id} {' '.join(f'{x:.6f}' for x in xywhn)}\n")
 
-                db.add(BoundingBox(
-                    model_id=model_id,
-                    image_id=image.id,
-                    created_at=datetime.utcnow(),
-                    class_id=int(box.cls),
-                    class_name=yolo_model.names[int(box.cls)],
-                    x_center=float(box.xywhn[0][0]),
-                    y_center=float(box.xywhn[0][1]),
-                    width=float(box.xywhn[0][2]),
-                    height=float(box.xywhn[0][3]),
-                    confidence=float(box.conf),
-                    validation_status="auto"
-                ))
+                    if image is not None:
+                        db.add(BoundingBox(
+                            model_id=model_id,
+                            image_id=image.id,
+                            created_at=datetime.utcnow(),
+                            class_id=int(box.cls),
+                            class_name=yolo_model.names[int(box.cls)],
+                            x_center=float(box.xywhn[0][0]),
+                            y_center=float(box.xywhn[0][1]),
+                            width=float(box.xywhn[0][2]),
+                            height=float(box.xywhn[0][3]),
+                            confidence=float(box.conf),
+                            validation_status="auto"
+                        ))
 
-                db.commit()
+                        db.commit()
 
         # Save class names (sorted by class ID)
         detected_classes = sorted(list(unique_classes))
@@ -113,12 +115,12 @@ def auto_annotate(dataset_id : str, model_id : str, db: Session) -> None:
         with open(class_names_path, 'w') as f:
             f.write("\n".join(detected_classes))
         
-        dataset.status = DatasetStatus.AUTO_ANNOTATED
+        dataset.status = DatasetStatus.AUTO_ANNOTATED # type: ignore
         db.commit()
 
     print(f"Auto-annotation completed for dataset {dataset.name} using model {model.name}.")
 
-async def process_validated_annotations(dataset_id: str, annotations_zip: UploadFile, db: Session) -> str:
+async def process_validated_annotations(dataset_id: int, annotations_zip: UploadFile, db: Session) -> str:
     """
     This function extracted the validated annotations and stores them in the labels folder of the dataset
     
@@ -164,14 +166,14 @@ async def process_validated_annotations(dataset_id: str, annotations_zip: Upload
         os.remove(temp_zip_path)
 
         # Update status and commit
-        dataset.status = DatasetStatus.VALIDATED
+        dataset.status = DatasetStatus.VALIDATED # type: ignore
         db.add(dataset)  # Explicitly add to session if needed
         db.commit()
         db.refresh(dataset)  # Refresh to verify the update
 
         # Verify the status was updated
         updated_dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
-        if updated_dataset.status != DatasetStatus.VALIDATED:
+        if not updated_dataset or updated_dataset.status is not DatasetStatus.VALIDATED:
             raise Exception("Failed to update dataset status in database")
 
         return f"Annotations successfully extracted to {labels_path}"

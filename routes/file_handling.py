@@ -36,7 +36,7 @@ async def download_dataset_folder(
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     # Create the folder path based on the folder type
-    dataset_path = os.path.join("datasets", dataset.name)
+    dataset_path = os.path.join("datasets", str(dataset.name))
     folder_path = os.path.join(dataset_path, folder_type)
     
     # Check if the folder exists
@@ -82,7 +82,7 @@ async def download_dataset_folder(
 async def get_image(
     dataset_id: int,
     image_id: int,
-    image_type: str = Literal["raw", "auto_annotated", "validated"],
+    image_type: Literal["raw", "auto_annotated", "validated"] = "raw",
     db: Session = Depends(get_db),
 ):
     """
