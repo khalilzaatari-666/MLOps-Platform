@@ -1,11 +1,13 @@
 import logging
-from fastapi import FastAPI, Request
+import multiprocessing
+import warnings
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
-from starlette.responses import Response
 from app.database import SessionLocal, Base, engine
 from app.model_service import register_existing_models
 from routes import annotation, crud, file_handling, training_instances, model_service, data_augmentation, pre_trained_models
+from app.crud import fetch_users
 
 # Initialize FastAPI app
 app = FastAPI(title="MLOps Platform API")
@@ -33,7 +35,9 @@ async def startup():
         db = SessionLocal()
         try:
             register_existing_models(db=db)
+            fetch_users(db=db)
             logger.info("Tables created, and pre-trained models registered.")
+
         finally:
             db.close()
     except Exception as e:

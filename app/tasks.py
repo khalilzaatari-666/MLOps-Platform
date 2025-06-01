@@ -230,7 +230,7 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
    
     try:
         task = get_training_task(db, task_id)
-        if task.status.is_(TrainingStatus.PREPARED) is False:
+        if task.status != TrainingStatus.PREPARED:
             raise ValueError("Dataset not prepared for task")
        
         logger.info(f"Starting training for task {task_id}")
@@ -253,7 +253,9 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
                         'metrics/mAP50(B)': float(metrics.get('metrics/mAP50(B)', 0)),
                         'metrics/mAP50-95(B)': float(metrics.get('metrics/mAP50-95(B)', 0)),
                         'metrics/precision(B)': float(metrics.get('metrics/precision(B)', 0)),
-                        'metrics/recall(B)': float(metrics.get('metrics/recall(B)', 0))
+                        'metrics/recall(B)': float(metrics.get('metrics/recall(B)', 0)),
+                        'train/box_loss': float(metrics.get('train/box_loss', 0)),
+                        'val/box_loss': float(metrics.get('val/box_loss', 0))
                     }
                     
         # Register callback directly
@@ -261,8 +263,9 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         
         results = model.train(
             data=yaml_path,
+            imgsz=task.params.get('imgsz', 640),
             epochs=task.params.get('epochs', 100),
-            batch=task.params.get('batch_size', 16),
+            batch=task.params.get('batch', 16),
             lr0=task.params.get('lr0', 0.01),
             lrf=task.params.get('lrf', 0.1),
             momentum=task.params.get('momentum', 0.937),
@@ -293,6 +296,8 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
             'metrics/mAP50-95(B)': results.results_dict.get('metrics/mAP50-95', 0) if results and hasattr(results, 'results_dict') else 0,
             'metrics/precision(B)': results.results_dict.get('metrics/precision', 0) if results and hasattr(results, 'results_dict') else 0,
             'metrics/recall(B)': results.results_dict.get('metrics/recall', 0) if results and hasattr(results, 'results_dict') else 0,
+            'train/box_loss': results.results_dict.get('train/box_loss', 0) if results and hasattr(results, 'results_dict') else 0,
+            'val/box_loss': results.results_dict.get('val/box_loss', 0) if results and hasattr(results, 'results_dict') else 0,
             'inference_speed': results.speed.get('inference', 0) if results and hasattr(results, 'speed') else 0  # ms per image
         }
        
@@ -328,7 +333,7 @@ def test_model_task(dataset_id: int, use_gpu: bool):
         if not last_best_model:
             raise ValueError("No available model to test")
         
-        if last_best_model.dataset_id.is_(dataset_id):
+        if last_best_model.dataset_id == dataset_id:
             raise ValueError("Model already trained on this dataset")
 
         device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
@@ -338,7 +343,7 @@ def test_model_task(dataset_id: int, use_gpu: bool):
             data_yaml = prepare_yolo_dataset_by_id(
                 db,
                 dataset_id,
-                split_ratios={"train": 0.2, "val": 0.2, "test": 0.6},
+                split_ratios={"train": 0.8, "val": 0.1, "test": 0.1},
                 overwrite=True
             )
             if not Path(data_yaml).exists():
@@ -364,7 +369,7 @@ def test_model_task(dataset_id: int, use_gpu: bool):
         # Run validation
         try:
             logger.info(f"Starting test on dataset ID: {last_best_model.dataset_id}")
-            results = model.val(data=data_yaml, split='test', device=device)
+            results = model.val(data=data_yaml, split='train', device=device)
             
             # Record end time
             end_time = datetime.utcnow()

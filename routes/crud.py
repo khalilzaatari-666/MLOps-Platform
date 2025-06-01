@@ -4,14 +4,15 @@ from typing import List
 import requests
 from app import crud, models, schemas
 from core.dependencies import get_db
-from app.schemas import DatasetStatus, UserResponse, ModelResponse, ImageResponse, DeployedModelResponse, DatasetResponse
+from app.schemas import DatasetStatus, UserResponse, ModelResponse, DeployedModelResponse, DatasetResponse
 from app.models import UserModel, ModelModel
 from dotenv import load_dotenv
 import os
-import json
-import app.crud
+import logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 load_dotenv()
 API_USERS = os.getenv("API_USERS")
 API_AUTH_KEY = os.getenv("API_AUTH_KEY")
@@ -26,14 +27,31 @@ async def create_dataset(
     dataset_request: schemas.CreateDatasetRequest, 
     db: Session = Depends(get_db)
 ):
-    dataset = crud.create_dataset(
-        db=db,
-        model=dataset_request.model,
-        start_date=dataset_request.start_date,
-        end_date=dataset_request.end_date,
-        user_ids=dataset_request.user_ids
-    )
-    return dataset
+    try:
+        logger.info(f"Creating dataset with model={dataset_request.model}, "
+                    f"start_date={dataset_request.start_date}, "
+                    f"end_date={dataset_request.end_date}, "
+                    f"user_ids={dataset_request.user_ids}")
+
+        dataset = crud.create_dataset(
+            db=db,
+            model=dataset_request.model,
+            start_date=dataset_request.start_date,
+            end_date=dataset_request.end_date,
+            user_ids=dataset_request.user_ids
+        )
+
+        logger.info(f"Dataset created successfully: {dataset['name']} (ID: {dataset['id']})")
+        return dataset
+
+    except HTTPException as http_exc:
+        logger.error(f"HTTP error: {http_exc.detail}")
+        raise http_exc
+
+    except Exception as exc:
+        logger.exception("Unexpected error occurred while creating dataset.")
+        raise HTTPException(status_code=500, detail="Internal server error while creating dataset.")
+
 
 @router.get("/datasets/{status}", response_model=List[schemas.DatasetResponse])
 async def get_dataset_by_status(
@@ -48,44 +66,6 @@ async def get_dataset_by_status(
     )
     return dataset
     
-
-@router.post("/list_users", response_model=List[schemas.UserResponse])
-async def list_users(db: Session = Depends(get_db)):
-    # Make the API request to fetch users
-    if not API_USERS:
-        raise HTTPException(status_code=500, detail="API_USERS environment variable is not set")
-    try:
-        response = requests.post(API_USERS, headers=HEADERS)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        
-        # Parse the response JSON
-        response_data = response.json()
-        users_list = response_data.get("All users", [])
-        
-        # Add the fetched users to the database if they don't already exist
-        for user_data in users_list:
-            existing_user = db.query(models.UserModel).filter(
-                models.UserModel.id == user_data['id']
-            ).first()
-            
-            if not existing_user:
-                new_user = models.UserModel(
-                    id=user_data['id'],
-                    full_name=user_data['full_name'],
-                    company_name=user_data['company_name']
-                )
-                db.add(new_user)
-        
-        db.commit()
-        users_from_db = crud.list_users(db=db)
-        return users_from_db
-        
-    except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch users from external API: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
 @router.get("/users", response_model=List[UserResponse])
 async def get_users(db: Session = Depends(get_db)):
     """

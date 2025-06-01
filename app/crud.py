@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import os
 import requests
+from app import models
 from app.models import DatasetModel, ImageModel, UserModel, dataset_images, DeployedModel
 from app.schemas import DatasetStatus
 from dotenv import load_dotenv
@@ -24,6 +25,8 @@ API_AUTH_KEY = os.getenv("API_AUTH_KEY")
 API_IMAGES_INFO = os.getenv("API_IMAGES_INFO")
 API_DOWNLOAD_IMAGE = os.getenv("API_DOWNLOAD_IMAGE")
 DATASET_STORAGE_PATH = os.getenv("DATASET_STORAGE_PATH", "./datasets")  
+API_USERS = os.getenv("API_USERS")
+HEADERS = os.getenv("HEADERS")
     
 
 def create_dataset(db: Session, model: str, start_date: str, end_date: str, user_ids: list) -> Dict[str, Any]:
@@ -32,11 +35,10 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
     associates them with the dataset, and then downloads the images to a local directory.
     """
     # Validate model before making the API request
-    if not ALLOWED_MODELS:
-        raise HTTPException(status_code=500, detail="ALLOWED_MODELS environment variable is not set.")
-    allowed_models_list = [m.strip() for m in ALLOWED_MODELS.split(",")]
-    if model not in allowed_models_list:
-        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(allowed_models_list)}.")
+    #if not ALLOWED_MODELS:
+    #    raise HTTPException(status_code=500, detail="ALLOWED_MODELS environment variable is not set.")
+    #if model not in ALLOWED_MODELS:
+    #    raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(ALLOWED_MODELS)}.")
 
     images_info = fetch_images(db, model, start_date, end_date, user_ids)
     if not images_info:
@@ -61,7 +63,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
             "model": model,
             "id": -1, # Use a placeholder ID for empty datasets
             "created_at": created_at.isoformat(),
-            "status": DatasetStatus.RAW
+            "status": DatasetStatus.RAW,
+            "count": 0
         }
 
     dataset_name = f"{clean_model}_dataset_{start}_{end}"  # Generate the name
@@ -77,7 +80,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
             "model": existing_dataset.model,
             "id": existing_dataset.id,
             "created_at": existing_dataset.created_at.isoformat(),
-            "status": existing_dataset.status
+            "status": existing_dataset.status,
+            "count": existing_dataset.count
         }
 
     new_dataset = DatasetModel(
@@ -86,14 +90,19 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         end_date=end_date,
         model=model,
         created_at=created_at,
-        status=DatasetStatus.RAW
+        status=DatasetStatus.RAW,
+        count = 0
     )
 
     # Associate users with dataset
     users = db.query(UserModel).filter(UserModel.id.in_(user_ids)).all() if user_ids else db.query(UserModel).all()
     new_dataset.users.extend(users)
 
+    db.add(new_dataset)
+    db.flush()
+
     # Associate images with dataset
+    valid_count = 0
     for image_info in images_info:
         image_name = image_info.get("image_name")  # Ensure the key matches the API response
         if not image_name:
@@ -104,12 +113,12 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         if not image:
             image = ImageModel(filename=image_name)
             db.add(image)  # Add the image to the session immediately
-            db.commit()    # Commit the session to persist the image
-            db.refresh(image)  # Refresh to get the ID of the newly added image
+            db.flush()
         new_dataset.images.append(image)
+        valid_count += 1
 
-    db.add(new_dataset)  # Add the new dataset to the session
-    db.commit()  # Commit to persist the dataset
+    new_dataset.count = valid_count
+    db.commit()# Commit to persist the dataset
     db.refresh(new_dataset)  # Refresh to get the ID of the newly added dataset
 
     # Create dataset storage directory
@@ -125,10 +134,10 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
     metadata = {
         "created_at": created_at.isoformat(),  # ISO format timestamp
         "user_ids": user_ids,                  # List of user IDs
-        "image_count": len(new_dataset.images),  # Number of images in the dataset
         "models": model,                       # Model(s) used for the dataset
         "start_date": start_date,              # Start date of the dataset
-        "end_date": end_date                   # End date of the dataset
+        "end_date": end_date,                   # End date of the dataset
+        "count": valid_count
     }
 
     metadata_path = os.path.join(dataset_path, "metadata.json")
@@ -166,7 +175,8 @@ def create_dataset(db: Session, model: str, start_date: str, end_date: str, user
         "end_date": new_dataset.end_date,      # Convert to string
         "model": new_dataset.model,
         "created_at": new_dataset.created_at.isoformat(),
-        "status": new_dataset.status
+        "status": new_dataset.status,
+        "count": valid_count
     }
 
 
@@ -175,11 +185,11 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
     Fetches images from an external API based on the given parameters.
     """
     # Validate model before making the API request
-    if not ALLOWED_MODELS:
-        raise HTTPException(status_code=500, detail="ALLOWED_MODELS environment variable is not set.")
-    allowed_models_list = [m.strip() for m in ALLOWED_MODELS.split(",")]
-    if model not in allowed_models_list:
-        raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(allowed_models_list)}.")
+    #if not ALLOWED_MODELS:
+    #    raise HTTPException(status_code=500, detail="ALLOWED_MODELS environment variable is not set.")
+    #allowed_models_list = [m.strip() for m in ALLOWED_MODELS.split(",")]
+    #if model not in allowed_models_list:
+    #    raise HTTPException(status_code=400, detail=f"Invalid model '{model}'. Choose from {', '.join(allowed_models_list)}.")
     
     # Fetch users from the database based on user_ids (if passed)
     if user_ids:
@@ -225,6 +235,41 @@ def fetch_images(db: Session, model: str, start_date: str, end_date: str, user_i
     else:
         print(f"Error fetching images: {response.status_code} {response.text}")
         return []
+    
+def fetch_users(db: Session):
+    # Make the API request to fetch users
+    if not API_USERS:
+        raise HTTPException(status_code=500, detail="API_USERS environment variable is not set")
+    try:
+        response = requests.post(API_USERS, headers=HEADERS)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        
+        # Parse the response JSON
+        response_data = response.json()
+        users_list = response_data.get("All users", [])
+        
+        # Add the fetched users to the database if they don't already exist
+        for user_data in users_list:
+            existing_user = db.query(models.UserModel).filter(
+                models.UserModel.id == user_data['id']
+            ).first()
+            
+            if not existing_user:
+                new_user = models.UserModel(
+                    id=user_data['id'],
+                    full_name=user_data['full_name'],
+                    company_name=user_data['company_name']
+                )
+                db.add(new_user)
+        
+        db.commit()
+        return "Clients fetched successfully"
+        
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch users from external API: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 def list_users(db:Session):
     return db.query(UserModel).all()
@@ -244,7 +289,8 @@ def list_datasets(db: Session):
             "created_at": dataset.created_at.isoformat(),
             "users": [user.id for user in dataset.users],  # List of user IDs
             "images": [image.id for image in dataset.images],  # List of image IDs
-            "status": dataset.status
+            "status": dataset.status,
+            "count": dataset.count
         }
         for dataset in datasets
     ]

@@ -5,13 +5,14 @@ from app.annotation_service import auto_annotate, process_validated_annotations
 router = APIRouter()
 
 # Auto annotation endpoint
-@router.get("/annotate/{dataset_id}/{model_id}")
+@router.post("/annotate/{dataset_id}/{model_id}/{use_gpu}")
 def annotate_images(
     dataset_id: int, 
     model_id: int, 
+    use_gpu: bool,
     db: Session = Depends(get_db)
 ):
-    auto_annotate(dataset_id=dataset_id, model_id=model_id, db=db)
+    auto_annotate(dataset_id=dataset_id, model_id=model_id, use_gpu=use_gpu, db=db)
     return {"message": "Auto-annotation completed successfully."}
 
 # Annotate the images after bounding boxes manual validation

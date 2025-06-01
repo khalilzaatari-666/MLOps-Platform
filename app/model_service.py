@@ -88,29 +88,28 @@ def prepare_yolo_dataset_by_id(
     
     # Construct dataset path from name
     # All paths are relative to PROJECT_ROOT
-    dataset_path = PROJECT_ROOT / "datasets" / dataset.name
+    dataset_path = PROJECT_ROOT / "datasets" / dataset.name / "augmented_data"
     if not os.path.exists(str(dataset_path)):
         raise ValueError(f"Dataset folder not found at: {dataset_path}")
     
-    yolo_dir = dataset_path / "yolo_splits"
+    yolo_dir = PROJECT_ROOT / "datasets" / dataset.name / "yolo_splits"
 
     # Check if raw folder exists
-    raw_folder = os.path.join(str(dataset_path), "raw")
-    if not os.path.exists(raw_folder):
-        raise ValueError(f"Raw folder not found at: {raw_folder}")
+    images_folder = os.path.join(str(dataset_path), "images")
+    if not os.path.exists(images_folder):
+        raise ValueError(f"images folder not found at: {images_folder}")
 
     # Create output directory inside the dataset folder
-    output_dir = os.path.join(str(dataset_path), "yolo_splits")
-    if os.path.exists(output_dir):
+    if os.path.exists(yolo_dir):
         if overwrite:
-            shutil.rmtree(output_dir)
+            shutil.rmtree(yolo_dir)
         else:
             # Return existing yaml if splits already exist
-            existing_yaml = os.path.join(output_dir, "data.yaml")
+            existing_yaml = os.path.join(yolo_dir, "data.yaml")
             if os.path.exists(existing_yaml):
                 return existing_yaml
     
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(yolo_dir, exist_ok=True)
 
     # Create directory structure
     (yolo_dir / "train/images").mkdir(parents=True, exist_ok=True)
@@ -120,13 +119,13 @@ def prepare_yolo_dataset_by_id(
     (yolo_dir / "test/images").mkdir(parents=True, exist_ok=True)
     (yolo_dir / "test/labels").mkdir(parents=True, exist_ok=True) 
 
-    # Get list of image files directly from raw folder
+    # Get list of image files directly from images folder
     image_files = []
     for ext in ['.jpg', '.jpeg', '.png']:
-        image_files.extend(list(Path(raw_folder).glob(f'*{ext}')))
+        image_files.extend(list(Path(images_folder).glob(f'*{ext}')))
     
     if not image_files:
-        raise ValueError(f"No image files found in {raw_folder}")
+        raise ValueError(f"No image files found in {images_folder}")
     
     # Extract image stems for splitting
     image_stems = [f.stem for f in image_files]
@@ -159,22 +158,17 @@ def prepare_yolo_dataset_by_id(
             continue  # Skip if not in any split (shouldn't happen)
         
         # Copy image
-        dest_img = os.path.join(output_dir, split, 'images', img_file.name)
+        dest_img = os.path.join(yolo_dir, split, 'images', img_file.name)
         shutil.copy(img_file, dest_img)
         
         # Copy label if it exists
         if has_labels:
             label_file = os.path.join(labels_dir, f"{stem}.txt")
             if os.path.exists(label_file):
-                dest_label = os.path.join(output_dir, split, 'labels', f"{stem}.txt")
+                dest_label = os.path.join(yolo_dir, split, 'labels', f"{stem}.txt")
                 shutil.copy(label_file, dest_label)
 
     # Create data.yaml file with the requested structure
-    # Create output directory
-    output_dir = os.path.join(str(dataset_path), "yolo_splits")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Create data.yaml with correct paths
     yaml_content = f"""
         # Train/val/test sets: specify directories, *.txt files, or lists
         train: train/images

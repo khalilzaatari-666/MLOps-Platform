@@ -1,14 +1,10 @@
-from datetime import datetime
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from core.dependencies import get_db
 from sqlalchemy.orm import Session
 from app.models import ModelModel
-from app.model_upload import extract_model_metadata, save_file, upload_progress
+from app.model_upload import upload_model
 import os
-import uuid
-from fastapi.responses import JSONResponse
 from typing import Optional
-from pathlib import Path
 from dotenv import load_dotenv
 
 router = APIRouter()
@@ -16,58 +12,37 @@ load_dotenv()
 MODEL_STORAGE_PATH = os.getenv("MODEL_STORAGE_PATH", "pretrained_models")
 
 @router.post("/upload-model")
-async def upload_model(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+async def upload_model_endpoint(
+    model_file: UploadFile = File(...),
     group: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
-    """Upload a .pt model file with progress tracking"""
+    if not model_file.filename.endswith(".pt"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .pt files are supported"
+        )
     
-    upload_id = str(uuid.uuid4())
+    result = await upload_model(model_file, group, db)
     
-    if not file.filename or not file.filename.endswith('.pt'):
-        raise HTTPException(status_code=400, detail="Only .pt files are allowed")
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    if result.get("message") == "Model already exists":
+        raise HTTPException(status_code=400, detail="Model already exists")
     
-    model_name = Path(file.filename).stem
-    existing_model = db.query(ModelModel).filter(ModelModel.name == model_name).first()
-    
-    # Create model directory
-    model_dir = MODEL_STORAGE_PATH
-    os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, file.filename)
+    return result
 
-    # Create a copy of the file contents to use in background task
-    file_contents = await file.read()
-    await file.seek(0)  # Rewind for potential reuse
-    
-    # Start background task with the file contents
-    background_tasks.add_task(
-        save_file,
-        file_contents=file_contents,
-        upload_id=upload_id,
-        model_path=model_path,
-        model_name=model_name,
-        group=group,
-        db=db
-    )
-    
-    return JSONResponse({
-        "upload_id": upload_id,
-        "message": "Model uploaded successfully",
-        "filename": file.filename
-    })
 
 @router.get("/list-models")
 async def list_models(db: Session = Depends(get_db)):
     """List all models from database"""
     try:
-        models = db.query(ModelModel).filter(ModelModel.is_active == True).all()
+        models = db.query(ModelModel).all()
         
         models_data = []
         for model in models:
             # Check if file still exists
-            file_exists = os.path.exists(model.model_path) if model.model_path else False #type: ignore
+            file_exists = os.path.exists(model.model_path) if model.model_path else False
             
             models_data.append({
                 "id": model.id,
@@ -89,13 +64,16 @@ async def list_models(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/deactivate-model/{model_id}")
-async def delete_model(model_id: int, db: Session = Depends(get_db)):
-    """Delete a model from database and filesystem"""
+async def deactivate_model(model_id: int, db: Session = Depends(get_db)):
+    """Deactivate model"""
     try:
         # Find model in database
         model = db.query(ModelModel).filter(ModelModel.id == model_id).first()
         if not model:
             raise HTTPException(status_code=404, detail="Model not found")
+        
+        if not model.is_active:
+            raise HTTPException(status_code=400, detail="Model already inactive")
         
         setattr(model, "is_active", False)  # Mark as inactive
         db.commit()
@@ -104,6 +82,27 @@ async def delete_model(model_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.put('/activate-model/{model_id}')
+async def activate_model(model_id: int, db: Session = Depends(get_db)):
+    """Activate model"""
+    try:
+        # Find model in database
+        model = db.query(ModelModel).filter(ModelModel.id == model_id).first()
+        if not model:
+            raise HTTPException(status_code=404, detail="Model not found")
+        
+        if model.is_active:
+            raise HTTPException(status_code=400, detail="Model already active")
+        
+        setattr(model, "is_active", True)  # Mark as active
+        db.commit()
+        
+        return {"message": f"Model {model.name} activated successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.put("/update-model/{model_id}")
 async def update_model(

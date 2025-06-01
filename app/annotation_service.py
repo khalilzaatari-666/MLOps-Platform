@@ -7,11 +7,12 @@ import zipfile
 import cv2
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
+import torch
 from ultralytics import YOLO
 from app.models import BoundingBox, DatasetModel, ImageModel, ModelModel
 from app.schemas import DatasetStatus
 
-def auto_annotate(dataset_id : int, model_id : int, db: Session) -> None:
+def auto_annotate(dataset_id : int, model_id : int, use_gpu: bool, db: Session) -> None:
     """
     This function performs auto-annotation on the dataset using the specified YOLO model.
 
@@ -31,6 +32,8 @@ def auto_annotate(dataset_id : int, model_id : int, db: Session) -> None:
     #Get dataset path
     dataset_path = os.path.join("datasets", str(dataset.name))
     raw_images = os.path.join(dataset_path , "raw")
+
+    device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
 
     # Load the YOLO model
     try:
@@ -73,7 +76,7 @@ def auto_annotate(dataset_id : int, model_id : int, db: Session) -> None:
         image = db.query(ImageModel).filter(ImageModel.filename == image_file).first()
         
         # Perform inference
-        results = yolo_model.predict(image_path)
+        results = yolo_model.predict(image_path, device=device)
 
         # Save visualization
         vis_path = os.path.join(images_output, image_file)
@@ -115,8 +118,8 @@ def auto_annotate(dataset_id : int, model_id : int, db: Session) -> None:
         with open(class_names_path, 'w') as f:
             f.write("\n".join(detected_classes))
         
-        dataset.status = DatasetStatus.AUTO_ANNOTATED # type: ignore
-        db.commit()
+    dataset.status = DatasetStatus.AUTO_ANNOTATED # type: ignore
+    db.commit()
 
     print(f"Auto-annotation completed for dataset {dataset.name} using model {model.name}.")
 

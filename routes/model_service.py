@@ -75,7 +75,7 @@ def start_training(
             task = create_training_task(
                 db=db,
                 dataset_id=request.dataset_id,
-                instance_id=training_instance.id,      #type: ignore
+                training_instance_id=training_instance.id,
                 params=params,
                 queue_position=i
             )
@@ -230,7 +230,9 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
                         "metrics/mAP50(B)": float(latest_metrics.get("metrics/mAP50(B)", 0)),
                         "metrics/mAP50-95(B)": float(latest_metrics.get("metrics/mAP50-95(B)", 0)),
                         "metrics/precision(B)": float(latest_metrics.get("metrics/precision(B)", 0)),
-                        "metrics/recall(B)": float(latest_metrics.get("metrics/recall(B)", 0))
+                        "metrics/recall(B)": float(latest_metrics.get("metrics/recall(B)", 0)),
+                        'train/box_loss': float(latest_metrics.get('train/box_loss', 0)),
+                        'val/box_loss': float(latest_metrics.get('val/box_loss', 0)),
                     }
                     
                     # Get historical metrics for plotting
@@ -241,7 +243,9 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
                             "metrics/mAP50(B)": float(row.get("metrics/mAP50(B)", 0)),
                             "metrics/mAP50-95(B)": float(row.get("metrics/mAP50-95(B)", 0)),
                             "metrics/precision(B)": float(row.get("metrics/precision(B)", 0)),
-                            "metrics/recall(B)": float(row.get("metrics/recall(B)", 0))
+                            "metrics/recall(B)": float(row.get("metrics/recall(B)", 0)),
+                            "train/box_loss": float(row.get("train/box_loss", 0)),
+                            "val/box_loss": float(row.get("val/box_loss", 0))
                         })
                     
                     response["task"]["current_metrics"] = metrics
@@ -273,7 +277,9 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
                     "metrics/mAP50(B)": task.results.get("metrics/mAP50", 0),
                     "metrics/mAP50-95(B)": task.results.get("metrics/mAP50-95", 0),
                     "metrics/precision(B)": task.results.get("metrics/precision", 0),
-                    "metrics/recall(B)": task.results.get("metrics/recall", 0)
+                    "metrics/recall(B)": task.results.get("metrics/recall", 0),
+                    "train/box_loss": task.results.get("train/box_loss", 0),
+                    "val/box_loss": task.results.get("val/box_loss", 0)
                 }
         else:
             # For other statuses (QUEUED, FAILED, etc.)

@@ -2,10 +2,8 @@ from datetime import datetime
 import hashlib
 import json
 import uuid
-from pydantic import Field
 from sqlalchemy import Column, Integer, Float, String, ForeignKey, Table, Boolean, DateTime, JSON, Enum, UniqueConstraint
 from sqlalchemy.orm import relationship
-from ultralytics import YOLO
 from app.database import Base
 from app.schemas import TrainingStatus, DatasetStatus
 
@@ -56,6 +54,7 @@ class DatasetModel(Base):
     model = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
     status = Column(Enum(DatasetStatus), default=DatasetStatus.RAW)
+    count = Column(Integer, default=0, nullable=False)
     
     # Many-to-many relationship with users
     users = relationship("UserModel", secondary=user_datasets, back_populates="datasets")

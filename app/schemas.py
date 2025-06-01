@@ -52,6 +52,7 @@ class DatasetResponse(BaseModel):
     model: str
     created_at: datetime
     status: str
+    count: int
 
     class Config:
         from_attributes = True
@@ -63,16 +64,6 @@ class DatasetStatus(enum.Enum):
     AUGMENTED = "AUGMENTED"
 
 # Pydantic schema for Dataset
-class DatasetBase(BaseModel):
-    name: str
-    start_date: str
-    end_date: str
-    model: str
-    created_at: datetime
-    users: List[int]  # List of user IDs
-    images: List[int]  # List of image IDs
-    status: DatasetStatus
-
 class CreateDatasetRequest(BaseModel):
     model: str = Field(..., description="The model to use for the dataset")
     start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
