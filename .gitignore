@@ -55,3 +55,4 @@ docs/
 runs/
 mysqldata/
 visualization/
+test_results/

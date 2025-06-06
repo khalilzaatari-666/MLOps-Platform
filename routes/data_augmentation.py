@@ -13,28 +13,25 @@ async def augment_dataset(request: AugmentationRequest, db: Session = Depends(ge
     Apply data augmentation to a dataset
     
     - **dataset_id**: ID/name of the dataset
-    - **transformer**: Transformer to apply (vertical_flip, horizontal_flip, transpose, center_crop)
+    - **transformers**: List of transformers to apply (vertical_flip, horizontal_flip, transpose, center_crop)
     """
     dataset = db.query(DatasetModel).filter(DatasetModel.id == request.dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    # Verify if dataset is augmented
-    if dataset.status == DatasetStatus.AUGMENTED:
-        raise HTTPException(status_code=404, detail="Dataset already augmented.")
 
-
+    print("received dataset id: " , request.dataset_id)
+    print("received transformers: " , request.transformers)
     # Verify if dataset has labels
-    if not (dataset.status == DatasetStatus.AUTO_ANNOTATED or dataset.status == DatasetStatus.VALIDATED):
+    if (dataset.status == DatasetStatus.RAW):
         raise HTTPException(
             status_code=400,
-            detail="Dataset must be AUTO_ANNOTATED or VALIDATED"
+            detail="Dataset must be AUTO_ANNOTATED or VALIDATED or AUGMENTED"
         )
 
     try:
         result = apply_augmentation(
             dataset_id=str(request.dataset_id),
-            transformer_type=request.transformer,
+            transformer_types=request.transformers,
             db=db
         )
         dataset.status = DatasetStatus.AUGMENTED

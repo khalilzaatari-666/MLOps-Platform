@@ -70,7 +70,8 @@ class DatasetModel(Base):
     training_instances = relationship("TrainingInstance", back_populates="dataset")
     # One-to-many relqtionship with deployed models
     deployed_models = relationship("DeployedModel", back_populates="dataset")
-
+    # One-to-many relationship with testing instances
+    testing_instances = relationship("TestingInstance", back_populates="dataset")
 
 # Model for storing metadata of images
 class ImageModel(Base):
@@ -159,7 +160,8 @@ class TrainingTask(Base):
 
     # Relationship to DatasetModel
     dataset = relationship("DatasetModel", back_populates="training_tasks")
-
+    # Relationship to testing task
+    test_tasks = relationship("TestTask", back_populates="training_task")
     # Relationship to TrainingInstance
     instances = relationship("TrainingInstance",
                             secondary=training_instance_task_association,
@@ -207,34 +209,41 @@ class BestInstanceModel(Base):
     instance = relationship("TrainingInstance")
     dataset = relationship("DatasetModel")
     task = relationship("TrainingTask")
+
+class TestingInstance(Base):
+    __tablename__ = "testing_instances"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    dataset = relationship("DatasetModel", back_populates="testing_instances")
+    test_tasks = relationship("TestTask", back_populates="testing_instance")
     
 class TestTask(Base):
     __tablename__ = "test_tasks"
    
-    id = Column(String(36), primary_key=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
-    dataset_tested_on = Column(Integer)
-    model_path = Column(String(255))  # Reasonable path length
+    testing_instance_id = Column(Integer, ForeignKey("testing_instances.id"))
+    training_task_id = Column(String(36), ForeignKey("training_tasks.id"))
     status = Column(Enum(TrainingStatus))
-    results = Column(JSON)
-    start_date = Column(DateTime)
-    end_date = Column(DateTime)
-    error = Column(String(500))
+    queue_position = Column(Integer, nullable=False)
+
+    map50 = Column(Float, nullable=True)
+    map50_95 = Column(Float, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
     # Relationship to DatasetModel
     dataset = relationship("DatasetModel", back_populates="test_tasks")
-    
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "dataset_id": self.dataset_id,
-            "model_path": self.model_path,
-            "status": self.status,
-            "results": self.results,
-            "start_date": self.start_date.isoformat() if getattr(self, "start_date", None) else None,
-            "end_date": self.end_date.isoformat() if getattr(self, "end_date", None) else None,
-            "error": self.error
-        }
+    training_task = relationship("TrainingTask", back_populates="test_tasks")
+    testing_instance = relationship("TestingInstance", back_populates="test_tasks")
 
 class DeployedModel(Base):
     """Model for tracking deployed models in production"""

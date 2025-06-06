@@ -1,4 +1,4 @@
-from pydantic import ConfigDict
+from pydantic import UUID4, ConfigDict
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
@@ -167,19 +167,19 @@ class TrainingTaskCreate(BaseModel):
 
 class ModelSelectionConfig(BaseModel):
     dataset_id: int
-    selection_metric: Literal['accuracy', 'precision', 'recall']
+    selection_metric: Literal['map50','map50_95','precision', 'recall']
     instance_id: Optional[int] = None
 
     @property
     def yolo_metric(self) -> str:
         return METRIC_MAPPING[self.selection_metric]
 
-class TestTaskCreate(BaseModel):
-    dataset_id: int
 
 class DeployedModelResponse(BaseModel):
     id: int
     dataset_id: int
+    dataset_name: str
+    dataset_group: str
     model_id: int
     path: str
     deployment_date: datetime
@@ -194,4 +194,20 @@ class TransformerType(str, Enum):
 
 class AugmentationRequest(BaseModel):
     dataset_id: int
-    transformer: TransformerType
+    transformers: List[TransformerType]
+
+class TestingStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+# Request/Response models
+class TestModelRequest(BaseModel):
+    dataset_id: int
+    useGpu: bool
+    
+class TestingResponse(BaseModel):
+    test_task_ids: List[UUID4]
+    status: str
+    message: str

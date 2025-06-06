@@ -14,8 +14,8 @@ import torch
 from ultralytics import YOLO
 from app.database import SessionLocal
 from app.model_service import prepare_yolo_dataset_by_id
-from app.models import BestInstanceModel, DatasetModel, TestTask, TrainingInstance, TrainingTask
-from app.schemas import (ModelSelectionConfig, TestTaskCreate, TrainingStatus)
+from app.models import DatasetModel, TestTask, TrainingInstance, TrainingTask
+from app.schemas import (TestingStatus, TrainingStatus)
 from dotenv import load_dotenv
 
 # Configure logging
@@ -124,32 +124,6 @@ def advance_queue(db: Session, dataset_id: Optional[int] = None):
         prepare_dataset_task.delay(next_task.dataset_id, next_task.id, next_task.split_ratios or {"train": 0.7, "val": 0.2, "test": 0.1})
         return next_task
     return None
-
-# API Endpoint to get test task status
-def get_test_task_status(test_task_id: str):
-    """Get status and results of a test task"""
-    db = SessionLocal()
-    try:
-        test_task = db.query(TestTask).filter(TestTask.id == test_task_id).first()
-        
-        if not test_task:
-            return {'status': 'NOT_FOUND', 'test_task_id': test_task_id}
-        
-        return {
-            'status': 'SUCCESS',
-            'test_task': {
-                'id': test_task.id,
-                'dataset_id': test_task.dataset_id,
-                'model_path': test_task.model_path,
-                'status': test_task.status,
-                'start_date': test_task.start_date.isoformat(),
-                'end_date': test_task.end_date.isoformat() if test_task.end_date is not None else None,
-                'results': test_task.results,
-                'error': test_task.error
-            }
-        }
-    finally:
-        db.close()
 
 # Get correct path to data.yaml for a dataset
 def get_dataset_yaml_path(dataset_id: int) -> str:
@@ -323,108 +297,160 @@ def train_model_task(self, dataset_id: int, task_id: str, yaml_path: str):
         db.close()
         advance_queue(db, task.dataset_id) # type: ignore
 
+def create_testing_task(db: Session, dataset_id: int, testing_instance_id: int, training_task_id: int, queue_position: int):
+    """Create a new testing task"""
+    task = TestTask(
+        dataset_id=dataset_id,
+        testing_instance_id=testing_instance_id,
+        training_task_id=training_task_id,
+        queue_position=queue_position
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
 
-def test_model_task(dataset_id: int, use_gpu: bool):
-    """Test a trained model on a dataset"""
-    db = SessionLocal()
+def get_testing_task(db: Session, task_id: str):
+    """Get a testing task by ID"""
+    return db.query(TestTask).filter(TestTask.id == task_id).first()
+
+def update_testing_task(db: Session, task_id: str, updates: dict):
+    """Update a testing task"""
+    task = db.query(TestTask).filter(TestTask.id == task_id).first()
+    if task:
+        for key, value in updates.items():
+            setattr(task, key, value)
+        db.commit()
+        db.refresh(task)
+    return task
+
+def get_completed_training_tasks(db: Session, dataset_id: int):
+    """Get all completed training tasks for the most recent training instance of a dataset"""
+    # First get the most recent training instance for this dataset
+    last_instance = db.query(TrainingInstance).filter(
+        TrainingInstance.dataset_id == dataset_id
+    ).order_by(
+        TrainingInstance.created_at.desc()
+    ).first()
+
+    if not last_instance:
+        return []
+
+    # Then get all completed tasks associated with this instance
+    return db.query(TrainingTask).filter(
+        TrainingTask.id.in_([task.id for task in last_instance.tasks]),
+        TrainingTask.status == TrainingStatus.COMPLETED
+    ).all()
+
+
+@app.task(bind=True, name='test_model')
+def run_inference_task(self, dataset_id: int, training_task_id: int, test_task_id: int, use_gpu: bool):
+    """
+    Celery task to run inference on a trained YOLO model
+    """
+    from ultralytics import YOLO
+    import os
     
+    db = SessionLocal()
     try:
-        last_best_model = db.query(BestInstanceModel).order_by(BestInstanceModel.instance_id.desc()).first()
-        if not last_best_model:
-            raise ValueError("No available model to test")
+        # Update task status to running
+        update_testing_task(db, str(test_task_id), {
+            "status": TestingStatus.IN_PROGRESS,
+            "started_at": datetime.utcnow()
+        })
         
-        if last_best_model.dataset_id == dataset_id:
-            raise ValueError("Model already trained on this dataset")
+        # Get the training task to access the trained model
+        training_task = db.query(TrainingTask).filter(TrainingTask.id == training_task_id).first()
+        if not training_task:
+            raise Exception(f"Training task {training_task_id} not found")
+        
+        if not training_task.model_path:
+            raise Exception(f"No model path found for training task {training_task_id}")
+        
+        # Get dataset info
+        dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
+        if not dataset:
+            raise Exception(f"Dataset {dataset_id} not found")
+        
+        # Load the trained YOLO model
+        logger.info(f"Loading YOLO model from {training_task.model_path}")
+        model_path = f"{training_task.model_path}/weights/best.pt"
+        model = YOLO(model_path)
+        
+        # Run YOLO validation/inference
+        logger.info(f"Running YOLO validation for testing task {test_task_id}")
 
+        data_yaml = f"datasets/{dataset.name}/yolo_splits/data.yaml"
         device = 0 if use_gpu and torch.cuda.is_available() else 'cpu'
         
-        # Prepare dataset paths
-        try:
-            data_yaml = prepare_yolo_dataset_by_id(
-                db,
-                dataset_id,
-                split_ratios={"train": 0.8, "val": 0.1, "test": 0.1},
-                overwrite=True
-            )
-            if not Path(data_yaml).exists():
-                raise FileNotFoundError(f"Dataset YAML not found at: {data_yaml}")
-        except Exception as e:
-            raise RuntimeError(f"Dataset preparation failed: {str(e)}")
+        # Use YOLO's built-in validation
+        results = model.val(
+            data=data_yaml,  # Path to dataset.yaml or test images folder
+            save=True,
+            save_txt=True,
+            save_json=True,
+            project=f"test_results/dataset_{dataset_id}",
+            name=f"task_{test_task_id}",
+            exist_ok=True,
+            split='test',
+            device=device
+        )
+        
+        # Extract metrics from YOLO results
+        metrics = results.results_dict if hasattr(results, 'results_dict') else {}
+        
+        # Get key metrics
+        map50 = float(metrics.get('metrics/mAP50(B)', 0.0))
+        map50_95 = float(metrics.get('metrics/mAP50-95(B)', 0.0))
+        precision = float(metrics.get('metrics/precision(B)', 0.0))
+        recall = float(metrics.get('metrics/recall(B)', 0.0))
 
-        # Validate model path
-        model_file = Path(last_best_model.model_path) / "weights" / "best.pt"  # type: ignore
-        if not model_file.exists():
-            raise FileNotFoundError(f"Model weights not found at: {model_file}")
+        # Get per-class metrics if available
+        class_metrics = {}
+        if hasattr(results, 'ap_class_index') and hasattr(results, 'ap'):
+            for i, class_idx in enumerate(results.ap_class_index):
+                class_name = model.names[class_idx] if class_idx < len(model.names) else f"class_{class_idx}"
+                class_metrics[class_name] = {
+                    'ap50': float(results.ap[i, 0]) if len(results.ap.shape) > 1 else 0.0,
+                    'ap50_95': float(results.ap[i, :].mean()) if len(results.ap.shape) > 1 else 0.0
+                }
         
-        # Record start time
-        start_time = datetime.utcnow()
+        # Update task with results
+        update_testing_task(db, str(test_task_id), {
+            "status": TestingStatus.COMPLETED,
+            "completed_at": datetime.utcnow(),
+            "map50": map50,
+            "map50_95": map50_95,
+            "precision": precision,
+            "recall": recall,
+            "class_metrics": class_metrics,
+            "results_summary": metrics
+        })
         
-        # Load model
-        try:
-            logger.info(f"Loading model from {model_file}")
-            model = YOLO(str(model_file))
-        except Exception as e:
-            raise RuntimeError(f"Model loading failed: {str(e)}")
+        logger.info(f"Testing task {test_task_id} completed successfully - mAP50: {map50:.4f}, mAP50-95: {map50_95:.4f}")
         
-        # Run validation
-        try:
-            logger.info(f"Starting test on dataset ID: {last_best_model.dataset_id}")
-            results = model.val(data=data_yaml, split='train', device=device)
-            
-            # Record end time
-            end_time = datetime.utcnow()
-            duration_seconds = (end_time - start_time).total_seconds()
-            
-            if not hasattr(results, 'results_dict'):
-                raise RuntimeError("Validation did not return expected results format")
-            
-            # Extract and format metrics
-            metrics = {
-                'precision': results.results_dict.get('metrics/precision(B)'),
-                'recall': results.results_dict.get('metrics/recall(B)'),
-                'map50': results.results_dict.get('metrics/mAP50(B)'),
-                'map': results.results_dict.get('metrics/mAP50-95(B)'),
-                'inference_speed': results.speed.get('inference'),
-                'test_timestamp': datetime.utcnow().isoformat(),
-                'model_id': last_best_model.instance_id,
-                'model_path': str(model_file),
-                'dataset_id': last_best_model.dataset_id,
-                'trained_on_dataset': dataset_id,
-                'start_date': start_time.isoformat(),
-                'end_date': end_time.isoformat(),
-                'duration_seconds': duration_seconds
-            }
-            
-            logger.info(
-                f"Test completed. mAP50: {metrics['map50']:.3f}, "
-                f"Precision: {metrics['precision']:.3f}, "
-                f"Recall: {metrics['recall']:.3f}, "
-                f"Duration: {metrics['duration_seconds']:.2f} seconds"
+        # Check if there's a next task in the queue
+        next_task = db.query(TestTask).filter(
+            TestTask.dataset_id == dataset_id,
+            TestTask.status == TestingStatus.PENDING
+        ).order_by(TestTask.queue_position).first()
+        
+        if next_task:
+            logger.info(f"Starting next testing task {next_task.id}")
+            run_inference_task.delay(
+                dataset_id=dataset_id,
+                training_task_id=next_task.training_task_id,
+                test_task_id=next_task.id,
+                use_gpu=use_gpu
             )
+            update_testing_task(db, str(next_task.id), {"status": TestingStatus.PENDING})
         
-            test_task = TestTask(
-                id=str(uuid.uuid4()),
-                dataset_id=last_best_model.dataset_id,
-                dataset_tested_on=dataset_id,
-                model_path=str(model_file),
-                status=TrainingStatus.COMPLETED,
-                start_date=start_time,
-                end_date=end_time,
-                results=metrics
-            )
-            db.add(test_task)
-            db.commit()
-            db.refresh(test_task)
-            
-            return {
-                **metrics,
-                "test_task_id": test_task.id 
-            }
-            
-        except Exception as e:
-            logger.error(f"Validation failed: {str(e)}", exc_info=True)
-            raise RuntimeError(f"Model testing failed: {str(e)}")
-        
+    except Exception as e:
+        logger.error(f"Testing task {test_task_id} failed: {str(e)}")
+        update_testing_task(db, str(test_task_id), {
+            "status": TestingStatus.FAILED,
+            "completed_at": datetime.utcnow()
+        })
+        raise
     finally:
         db.close()
-

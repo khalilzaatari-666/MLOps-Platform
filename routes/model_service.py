@@ -1,6 +1,7 @@
 from datetime import datetime
 import logging
 from typing import Dict, Optional
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 import pandas as pd
@@ -8,9 +9,9 @@ from sqlalchemy.orm import Session
 from app.model_deployment import deploy_model_to_minio
 from core.dependencies import get_db
 from app.model_service import prepare_yolo_dataset_by_id
-from app.models import BestInstanceModel, DatasetModel, DeployedModel, TestTask, TrainingInstance, TrainingTask
-from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
-from app.tasks import create_training_task, get_training_task, prepare_dataset_task, test_model_task, update_training_task
+from app.models import BestInstanceModel, DatasetModel, DeployedModel, TestTask, TestingInstance, TrainingInstance, TrainingTask, training_instance_task_association
+from app.schemas import METRIC_MAPPING, ModelSelectionConfig, TestModelRequest, TestingResponse, TestingStatus, TrainModelRequest, TrainingResponse, TrainingStatus, TrainingStatusResponse
+from app.tasks import create_testing_task, create_training_task, get_completed_training_tasks, get_testing_task, get_training_task, prepare_dataset_task, run_inference_task, update_testing_task, update_training_task
 from pathlib import Path
 
 # Configure logging
@@ -292,114 +293,352 @@ def get_training_task_status(task_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get training task status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.post("/start_testing", response_model=TestingResponse)
+def start_testing(
+    request: TestModelRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Endpoint to start testing all trained models for a dataset.
+    Runs inference on each completed model using the test split.
+    """
+    test_task_ids = []
+    
+    try:
+        # Get all completed training tasks for this dataset
+        completed_training_tasks = get_completed_training_tasks(db, request.dataset_id)
+        
+        if not completed_training_tasks:
+            return TestingResponse(
+                test_task_ids=[],
+                status="error",
+                message=f"No completed training tasks found for dataset {request.dataset_id}"
+            )
+        
+        # Create a new testing instance
+        testing_instance = TestingInstance(dataset_id=request.dataset_id)
+        db.add(testing_instance)
+        db.flush()  # This gets the auto-generated ID
+        
+        # Create testing tasks for each completed training task
+        for i, training_task in enumerate(completed_training_tasks):
+            test_task = create_testing_task(
+                db=db,
+                dataset_id=request.dataset_id,
+                testing_instance_id=testing_instance.id,
+                training_task_id=training_task.id,
+                queue_position=i
+            )
+            test_task_ids.append(test_task.id)
+            logger.info(f"Created testing task {test_task.id} for training task {training_task.id}")
+        
+        # Start the first testing task if any were created
+        if test_task_ids:
+            first_test_task = get_testing_task(db, test_task_ids[0])
+            run_inference_task.delay(
+                dataset_id=request.dataset_id,
+                training_task_id=first_test_task.training_task_id,
+                test_task_id=first_test_task.id,
+                use_gpu=request.useGpu
+            )
+            update_testing_task(db, str(first_test_task.id), {"status": TestingStatus.PENDING})
+            logger.info(f"Started first testing task {first_test_task.id}")
+        
+        return TestingResponse(
+            test_task_ids=test_task_ids,
+            status="success",
+            message=f"Successfully queued {len(test_task_ids)} testing tasks"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error starting testing for dataset {request.dataset_id}: {str(e)}")
+        return TestingResponse(
+            test_task_ids=[],
+            status="error",
+            message=f"Failed to start testing: {str(e)}"
+        )
+
+# Additional endpoint to get testing results from latest testing instance
+
+@router.get("/testing_results/{dataset_id}")
+def get_testing_results(dataset_id: int, db: Session = Depends(get_db)):
+    """
+    Get comprehensive testing results for the latest testing instance of a dataset.
+    Returns progress statistics and individual task details.
+    """
+    # Get the most recent testing instance for this dataset
+    latest_testing_instance = db.query(TestingInstance).filter(
+        TestingInstance.dataset_id == dataset_id
+    ).order_by(TestingInstance.created_at.desc()).first()
+
+    if not latest_testing_instance:
+        return {
+            "dataset_id": dataset_id,
+            "testing_instance_id": None,
+            "testing_instance_created_at": None,
+            "progress": {
+                "total_tasks": 0,
+                "pending": 0,
+                "in_progress": 0,
+                "completed": 0,
+                "failed": 0,
+                "progress_percentage": 0.0
+            },
+            "tasks": [],
+            "message": "No testing instances found for this dataset"
+        }
+
+    # Refresh to ensure we get the latest state
+    db.refresh(latest_testing_instance)
+
+    # Get all testing tasks for this instance
+    test_tasks = db.query(TestTask).filter(
+        TestTask.testing_instance_id == latest_testing_instance.id
+    ).all()
+
+    # Calculate progress statistics
+    status_counts = {
+        "PENDING": 0,
+        "IN_PROGRESS": 0,
+        "COMPLETED": 0,
+        "FAILED": 0
+    }
+
+    for task in test_tasks:
+        status_counts[task.status] += 1
+
+    total_tasks = len(test_tasks)
+    progress_percentage = (
+        (status_counts["COMPLETED"] / total_tasks * 100) 
+        if total_tasks > 0 else 0.0
+    )
+
+    # Build detailed task results
+    tasks = []
+    for task in test_tasks:
+        # Get associated training task details
+        training_task = db.query(TrainingTask).filter(
+            TrainingTask.id == task.training_task_id
+        ).first()
+
+        tasks.append({
+            "test_task_id": str(task.id),
+            "training_task_id": str(task.training_task_id),
+            "queue_position": task.queue_position,
+            "status": task.status,
+            "hyperparameters": training_task.params if training_task else None,
+            "model_path": training_task.model_path if training_task else None,
+            "map50": task.map50,
+            "map50_95": task.map50_95,
+            "precision": task.precision,
+            "recall": task.recall,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "started_at": task.started_at.isoformat() if task.started_at else None,
+            "completed_at": task.completed_at.isoformat() if task.completed_at else None
+        })
+
+    return {
+        "dataset_id": dataset_id,
+        "testing_instance_id": latest_testing_instance.id,
+        "testing_instance_created_at": latest_testing_instance.created_at.isoformat(),
+        "progress": {
+            "total_tasks": total_tasks,
+            "pending": status_counts["PENDING"],
+            "in_progress": status_counts["IN_PROGRESS"],
+            "completed": status_counts["COMPLETED"],
+            "failed": status_counts["FAILED"],
+            "progress_percentage": round(progress_percentage, 2)
+        },
+        "tasks": tasks
+    }
+
+# Endpoint to get individual testing task results
+@router.get("/test_task/{test_task_id}/results")
+def get_test_task_results(test_task_id: UUID, db: Session = Depends(get_db)):
+    """Get detailed results of a specific testing task"""
+    test_task_id_str = str(test_task_id)
+    test_task = db.query(TestTask).filter(TestTask.id == test_task_id_str).first()
+    
+    if not test_task:
+        raise HTTPException(status_code=404, detail="Testing task not found")
+    
+    # Get associated training task info (regardless of status)
+    training_task = db.query(TrainingTask).filter(
+        TrainingTask.id == test_task.training_task_id
+    ).first()
+    
+    # Base response structure
+    response = {
+        "test_task_id": test_task.id,
+        "training_task_id": test_task.training_task_id,
+        "dataset_id": test_task.dataset_id,
+        "testing_instance_id": test_task.testing_instance_id,
+        "status": test_task.status,
+        "hyperparameters": training_task.params if training_task else None,
+        "model_path": training_task.model_path if training_task else None,
+        "started_at": test_task.started_at,
+        "completed_at": test_task.completed_at,
+        "duration_seconds": (
+            (test_task.completed_at - test_task.started_at).total_seconds() 
+            if test_task.completed_at and test_task.started_at 
+            else None
+        ),
+        "metrics": {
+            "map50": test_task.map50,
+            "map50_95": test_task.map50_95,
+            "precision": test_task.precision,
+            "recall": test_task.recall
+        }
+    }
+    
+    return response
 
 @router.post("/select-best-model", response_model=dict)
 def select_best_model(
     config: ModelSelectionConfig,
     db: Session = Depends(get_db)
 ):
-    """Endpoint to select the best model for a specific training instance"""
+    """Select best model based on test task metrics"""
     try:
-        # Get the latest training instance for this dataset
-        latest_instance = db.query(TrainingInstance).filter(
-            TrainingInstance.dataset_id == config.dataset_id
-        ).order_by(TrainingInstance.created_at.desc()).first()
+        # Get the latest testing instance
+        latest_test_instance = db.query(TestingInstance).filter(
+            TestingInstance.dataset_id == config.dataset_id
+        ).order_by(TestingInstance.created_at.desc()).first()
         
-        if not latest_instance:
+        if not latest_test_instance:
             raise HTTPException(
                 status_code=404,
-                detail=f"No training instances found for dataset {config.dataset_id}"
+                detail=f"No testing instances found for dataset {config.dataset_id}"
             )
         
-        # Find completed tasks associated with this training instance
-        completed_tasks = []
-        for task in latest_instance.tasks:
-            task_obj = db.query(TrainingTask).filter(
-                TrainingTask.id == task.id,
-                TrainingTask.status == TrainingStatus.COMPLETED
-            ).first()
-            if task_obj:
-                completed_tasks.append(task_obj)
+        # Get completed test tasks with metrics
+        completed_test_tasks = db.query(TestTask).filter(
+            TestTask.testing_instance_id == latest_test_instance.id,
+            TestTask.status == TestingStatus.COMPLETED,
+            TestTask.map50.isnot(None)  # Ensure we have metrics
+        ).all()
         
-        if not completed_tasks:
+        if not completed_test_tasks:
             raise HTTPException(
                 status_code=404,
-                detail=f"No completed training tasks found for the latest training instance of dataset {config.dataset_id}"
+                detail=f"No completed test tasks with metrics found for dataset {config.dataset_id}"
             )
+
+        # Metric mapping to test task fields
+        METRIC_MAPPING = {
+            'map50': 'map50',
+            'map50_95': 'map50_95',
+            'precision': 'precision',
+            'recall': 'recall'
+        }
         
-        # Get the appropriate metric name from the mapping
         if config.selection_metric not in METRIC_MAPPING:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid metric: {config.selection_metric}"
+                detail=f"Invalid metric. Choose from: {list(METRIC_MAPPING.keys())}"
             )
-        # Use the mapped YOLO metric via the model property
-        yolo_metric = METRIC_MAPPING[config.selection_metric]
-            
-        # Select the best model based on the metric
-        best_task = max(completed_tasks, key=lambda t: t.results.get(yolo_metric, -1))
-        score = best_task.results.get(yolo_metric, 0)
         
-        # Check for existing best model for this instance
+        metric_field = METRIC_MAPPING[config.selection_metric]
+        
+        # Find task with best metric value
+        best_test_task = max(
+            completed_test_tasks,
+            key=lambda task: getattr(task, metric_field, -1)
+        )
+        best_score = getattr(best_test_task, metric_field)
+        
+        # Get associated training task
+        training_task = db.query(TrainingTask).filter(
+            TrainingTask.id == best_test_task.training_task_id
+        ).first()
+        
+        if not training_task:
+            raise HTTPException(
+                status_code=404,
+                detail="Associated training task not found"
+            )
+        
+        training_instance = db.query(TrainingInstance).join(
+            training_instance_task_association,
+            TrainingInstance.id == training_instance_task_association.c.training_instance_id
+        ).filter(
+            training_instance_task_association.c.training_task_id == training_task.id
+        ).first()
+
+        
+        # Update or create best model record
         existing_best = db.query(BestInstanceModel).filter(
-            BestInstanceModel.instance_id == latest_instance.id
+            BestInstanceModel.task_id == training_task.id
         ).first()
         
         if existing_best:
-            existing_best.task_id = best_task.id
-            existing_best.model_path = best_task.model_path
-            existing_best.score = score
-            existing_best.model_info = {    #type: ignore
-                'params': best_task.params,
-                'params_hash': best_task.params_hash,
+            # Update existing
+            existing_best.task_id = str(training_task.id)
+            existing_best.instance_id = training_instance.id
+            existing_best.model_path = training_task.model_path
+            existing_best.score = best_score
+            existing_best.model_info = {
+                'params': training_task.params,
+                'test_task_id': best_test_task.id,
                 'metric': config.selection_metric,
-                'score': score
+                'score': best_score,
+                'test_metrics': {
+                    'map50': best_test_task.map50,
+                    'map50_95': best_test_task.map50_95,
+                    'precision': best_test_task.precision,
+                    'recall': best_test_task.recall
+                }
             }
-            # Set the value of the mapped attribute, not the Column object
-            setattr(existing_best, "updated_at", datetime.utcnow())
-            model_result = existing_best
+            existing_best.updated_at = datetime.utcnow()
         else:
-            best_instance_model = BestInstanceModel(
-                instance_id=latest_instance.id,
+            # Create new
+            best_model = BestInstanceModel(
+                instance_id = training_instance.id,
                 dataset_id=config.dataset_id,
-                task_id=best_task.id,
-                model_path=best_task.model_path,
-                score=score,
+                task_id=training_task.id,
+                model_path=training_task.model_path,
+                score=best_score,
                 model_info={
-                    'params': best_task.params,
-                    'params_hash': best_task.params_hash,
+                    'params': training_task.params,
+                    'test_task_id': best_test_task.id,
                     'metric': config.selection_metric,
-                    'score': score
+                    'score': best_score,
+                    'test_metrics': {
+                        'map50': best_test_task.map50,
+                        'map50_95': best_test_task.map50_95,
+                        'precision': best_test_task.precision,
+                        'recall': best_test_task.recall
+                    }
                 }
             )
-            db.add(best_instance_model)
-            model_result = best_instance_model
+            db.add(best_model)
         
         db.commit()
-
-        training_task = db.query(TrainingTask).filter(
-            TrainingTask.id == best_task.id
-        ).first()
-
-        task_params = training_task.params if training_task is not None else {}
 
         return {
             'status': 'success',
             'best_model': {
-                'id': model_result.id if hasattr(model_result, 'id') else None,
-                'task_id': best_task.id,
-                'instance_id': latest_instance.id,
                 'dataset_id': config.dataset_id,
-                'model_path': best_task.model_path,
-                'params': task_params,
-                'score': score,
-                'metric': config.selection_metric
+                'training_task_id': training_task.id,
+                'test_task_id': best_test_task.id,
+                'model_path': training_task.model_path,
+                'metric': config.selection_metric,
+                'score': best_score,
+                'test_metrics': {
+                    'map50': best_test_task.map50,
+                    'map50_95': best_test_task.map50_95,
+                    'precision': best_test_task.precision,
+                    'recall': best_test_task.recall
+                }
             }
         }
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to select best model: {str(e)}")
+        db.rollback()
+        logger.error(f"Model selection failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/best-model/{dataset_id}")
@@ -424,44 +663,6 @@ def get_best_model_info(dataset_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get best model info: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/test-model/{dataset_id}", response_model=Dict, status_code=status.HTTP_200_OK)
-async def test_model(dataset_id: int, use_gpu: bool):
-    """
-    Endpoint to test a trained model on a specified dataset
-    
-    Parameters:
-    - dataset_id: ID of the dataset to test on
-    
-    Returns:
-    - Test metrics including precision, recall, mAP scores
-    """
-    try:
-        test_results = test_model_task(dataset_id, use_gpu)
-        
-        return JSONResponse(
-            content=test_results,
-            status_code=status.HTTP_200_OK
-        )
-        
-    except ValueError as e:
-        logger.error(f"Validation error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except RuntimeError as e:
-        logger.error(f"Testing failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred during testing"
-        )
 
 @router.post("/deploy_model", response_model=dict)
 async def deploy_model(db: Session = Depends(get_db)):

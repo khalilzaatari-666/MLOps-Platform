@@ -403,18 +403,21 @@ def list_deployed_models(db: Session):
     """
     List all deployed models from the database.
     """
-    deployed_models = db.query(DeployedModel).all()
+    deployed_models = db.query(DeployedModel, DatasetModel).join(DatasetModel, DeployedModel.dataset_id == DatasetModel.id).all()
+
     return [
         {
             "id": model.id,
             "dataset_id": model.dataset_id,
+            "dataset_name": dataset.name,
+            "dataset_group": dataset.model,
             "model_id": model.model_id,
             "path": model.minio_path,
             "deployment_date": model.deployment_date.isoformat(),
             "score": model.score,
             "status": model.status,
         }
-        for model in deployed_models
+        for model, dataset in deployed_models
     ]
 
 def get_deployed_model(db: Session, model_id: int):

@@ -93,7 +93,7 @@ def read_bbox(path: str) -> np.ndarray:
     
     return bboxes
 
-def apply_augmentation(dataset_id: str, transformer_type: TransformerType, db: Session = Depends(get_db)):
+def apply_augmentation(dataset_id: str, transformer_types: List[TransformerType], db: Session = Depends(get_db)):
     """Apply single data augmentation transformer to a dataset"""
     dataset = db.query(DatasetModel).filter(DatasetModel.id == dataset_id).first()
     if not dataset:
@@ -153,9 +153,11 @@ def apply_augmentation(dataset_id: str, transformer_type: TransformerType, db: S
     
     # Get transformer configuration
     transformer_configs = get_transformer_configs()
-    transformer = transformer_configs[transformer_type]
+    for transformer_type in transformer_types:
+        if transformer_type not in transformer_configs:
+            raise HTTPException(status_code=400, detail=f"Transformer type {transformer_type.value} not found")
     
-    print(f"Applying {transformer_type.value} transformation...")
+    print(f"Applying {len(transformer_types)} transformation(s): {[t.value for t in transformer_types]}")
     
     total_processed = 0
     image_index = 1
@@ -179,47 +181,51 @@ def apply_augmentation(dataset_id: str, transformer_type: TransformerType, db: S
             
             # Read bounding boxes
             bboxes = read_bbox(label_path)
+            for transformer_type in transformer_types:
+                transformer = transformer_configs[transformer_type]
+                print(f"  Applying {transformer_type.value} to {img_name}")
             
-            if len(bboxes) == 0:
-                # No annotations, apply transformation to image only
-                transform = A.Compose([transformer])
-                transformed = transform(image=image)
-                augmented_image = transformed['image']
-                augmented_boxes = []
-            else:
-                # Apply transformation with bounding boxes
-                boxes = bboxes[:, 1:]        # Only boxes
-                class_labels = bboxes[:, 0]  # Only labels
-                
-                transform = A.Compose(
-                    [transformer], 
-                    bbox_params=A.BboxParams(
-                        format='yolo',
-                        min_visibility=0.6,
-                        label_fields=['class_labels']
+                if len(bboxes) == 0:
+                    # No annotations, apply transformation to image only
+                    transform = A.Compose([transformer])
+                    transformed = transform(image=image)
+                    augmented_image = transformed['image']
+                    augmented_boxes = []
+                else:
+                    # Apply transformation with bounding boxes
+                    boxes = bboxes[:, 1:]        # Only boxes
+                    class_labels = bboxes[:, 0]  # Only labels
+                    
+                    transform = A.Compose(
+                        [transformer], 
+                        bbox_params=A.BboxParams(
+                            format='yolo',
+                            min_visibility=0.6,
+                            label_fields=['class_labels']
+                        )
                     )
+                    
+                    transformed = transform(image=image, bboxes=boxes, class_labels=class_labels)
+                    augmented_image = transformed['image']
+                    augmented_boxes = transformed['bboxes']
+                
+                # Save augmented image and labels with "augmented_" prefix
+                save_augmented_image_bbox(
+                    path_image=output_images_path,
+                    path_bbox=output_labels_path,
+                    augmented_boxes=augmented_boxes,
+                    augmented_image=augmented_image,
+                    img_name=img_name,
+                    transformer_name=transformer_type.value
                 )
                 
-                transformed = transform(image=image, bboxes=boxes, class_labels=class_labels)
-                augmented_image = transformed['image']
-                augmented_boxes = transformed['bboxes']
-            
-            # Save augmented image and labels with "augmented_" prefix
-            save_augmented_image_bbox(
-                path_image=output_images_path,
-                path_bbox=output_labels_path,
-                augmented_boxes=augmented_boxes,
-                augmented_image=augmented_image,
-                img_name=img_name,
-                transformer_name=transformer_type.value
-            )
-            
-            total_processed += 1
+                total_processed += 1
             
         except Exception as e:
             print(f"Error processing {img_path}: {str(e)}")
             continue
     
+    dataset.count = len(image_files) + total_processed
     print(f"Copying completed. Original images: {len(image_files)}")
     print(f"Augmentation completed. Augmented images: {total_processed}")
     print(f"Total images in augmented_data: {len(image_files) + total_processed}")
