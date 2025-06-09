@@ -303,7 +303,8 @@ def create_testing_task(db: Session, dataset_id: int, testing_instance_id: int, 
         dataset_id=dataset_id,
         testing_instance_id=testing_instance_id,
         training_task_id=training_task_id,
-        queue_position=queue_position
+        queue_position=queue_position,
+        status = TestingStatus.PENDING
     )
     db.add(task)
     db.commit()
@@ -430,20 +431,24 @@ def run_inference_task(self, dataset_id: int, training_task_id: int, test_task_i
         logger.info(f"Testing task {test_task_id} completed successfully - mAP50: {map50:.4f}, mAP50-95: {map50_95:.4f}")
         
         # Check if there's a next task in the queue
-        next_task = db.query(TestTask).filter(
-            TestTask.dataset_id == dataset_id,
-            TestTask.status == TestingStatus.PENDING
-        ).order_by(TestTask.queue_position).first()
-        
-        if next_task:
-            logger.info(f"Starting next testing task {next_task.id}")
-            run_inference_task.delay(
-                dataset_id=dataset_id,
-                training_task_id=next_task.training_task_id,
-                test_task_id=next_task.id,
-                use_gpu=use_gpu
-            )
-            update_testing_task(db, str(next_task.id), {"status": TestingStatus.PENDING})
+        current_task = db.query(TestTask).filter(TestTask.id == test_task_id).first()
+        if current_task:
+            next_task = db.query(TestTask).filter(
+                TestTask.testing_instance_id == current_task.testing_instance_id,
+                TestTask.status == TestingStatus.PENDING,
+                TestTask.queue_position > current_task.queue_position
+            ).order_by(TestTask.queue_position).first()
+
+            if not next_task:
+                logger.info(f"Starting next testing task {next_task.id} (queue position: {next_task.queue_position})")
+                run_inference_task.delay(
+                    dataset_id=dataset_id,
+                    training_task_id=next_task.training_task_id,
+                    test_task_id=next_task.id,
+                    use_gpu=use_gpu
+                ) 
+            else:
+                logger.info(f"No more testing tasks to process for testing instance {current_task.testing_instance_id}")
         
     except Exception as e:
         logger.error(f"Testing task {test_task_id} failed: {str(e)}")

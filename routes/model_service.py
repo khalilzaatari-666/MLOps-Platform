@@ -304,11 +304,9 @@ def start_testing(
     Runs inference on each completed model using the test split.
     """
     test_task_ids = []
-    
     try:
         # Get all completed training tasks for this dataset
         completed_training_tasks = get_completed_training_tasks(db, request.dataset_id)
-        
         if not completed_training_tasks:
             return TestingResponse(
                 test_task_ids=[],
@@ -331,19 +329,24 @@ def start_testing(
                 queue_position=i
             )
             test_task_ids.append(test_task.id)
-            logger.info(f"Created testing task {test_task.id} for training task {training_task.id}")
+            logger.info(f"Created testing task {test_task.id} for training task {training_task.id} (queue position: {i})")
+        
+        # Commit all the testing tasks
+        db.commit()
         
         # Start the first testing task if any were created
         if test_task_ids:
             first_test_task = get_testing_task(db, test_task_ids[0])
+            logger.info(f"Starting first testing task {first_test_task.id} with queue position {first_test_task.queue_position}")
+            
             run_inference_task.delay(
                 dataset_id=request.dataset_id,
                 training_task_id=first_test_task.training_task_id,
                 test_task_id=first_test_task.id,
                 use_gpu=request.useGpu
             )
-            update_testing_task(db, str(first_test_task.id), {"status": TestingStatus.PENDING})
-            logger.info(f"Started first testing task {first_test_task.id}")
+            
+            logger.info(f"Queued first testing task {first_test_task.id}")
         
         return TestingResponse(
             test_task_ids=test_task_ids,
@@ -360,7 +363,6 @@ def start_testing(
         )
 
 # Additional endpoint to get testing results from latest testing instance
-
 @router.get("/testing_results/{dataset_id}")
 def get_testing_results(dataset_id: int, db: Session = Depends(get_db)):
     """
@@ -624,6 +626,7 @@ def select_best_model(
                 'test_task_id': best_test_task.id,
                 'model_path': training_task.model_path,
                 'metric': config.selection_metric,
+                'params': training_task.params,
                 'score': best_score,
                 'test_metrics': {
                     'map50': best_test_task.map50,
